@@ -32,6 +32,28 @@
 
 ## 快速开始
 
+### 方式一：自动注册（推荐）
+
+```bash
+# 0. 管理员在 lwtop 上预生成 peer 池
+sudo bash server.sh --pre-gen 20
+
+# 1. 新机器一键注册（需要 GITEE_TOKEN）
+export GITEE_TOKEN=xxxx
+bash bash/client/register.sh ningsure
+
+# 2. 管理员在 lwtop 上激活
+sudo bash server.sh --activate ningsure
+
+# 3. 启动代理
+bash bash/client/client.sh --start
+export http_proxy=http://127.0.0.1:1080
+```
+
+详见 [docs/auto-registration.md](docs/auto-registration.md)
+
+### 方式二：手动安装
+
 ```bash
 # 1. 部署 server (lwtop/Ubuntu)
 scp bash/server/server.sh lw:~/
@@ -50,13 +72,27 @@ export https_proxy=http://127.0.0.1:1080
 
 详见 [docs/setup.md](docs/setup.md)
 
+## Server 信息（公开）
+
+| 项目 | 值 |
+|------|------|
+| Server 地址 | `8.209.203.17:51820` |
+| Server 公钥 | `M/t3YYwIW7Xou+vASGtNoAHHNrh82ROzYDU4LIsLz18=` |
+| Client 网段 | `10.0.0.2` – `10.0.0.250` |
+
+> Server 公钥可以公开，不影响安全性。Client 私钥存在 gitee 私有仓库。
+
 ## 目录
 
 ```
 bash/server/        wg server 一键管理 (Ubuntu)
 bash/client/        sing-box client 跨平台管理 (mixed 模式)
+  ├── client.sh     手动安装
+  └── register.sh   自动注册（从 gitee peer 池取配置）
 config/             安全配置模板
-docs/               架构 + 安装指南 + 事故记录
+docs/               架构 + 安装指南 + 事故记录 + 自动注册方案
+peers/              预生成 peer 配置池（gitee 私有）
+SERVER_PUBKEY       server 公钥（可公开）
 ```
 
 ## 仓库
