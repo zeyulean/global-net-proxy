@@ -2,6 +2,9 @@
 /target/
 **/target/
 
+# 构建产物 bin/ (只保留在根目录, 不提交)
+/bin/
+
 # Cargo.lock (workspace 应用项目可提交, 但这里作为工具库不提交)
 # 保留 Cargo.lock 以便复现构建
 # Cargo.lock

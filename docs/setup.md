@@ -9,18 +9,43 @@
 - **server**（lwtop / 任意 Ubuntu 海外节点）：原生 WireGuard，`wg-quick` 管理
 - **client**（Mac / Ubuntu / Windows）：sing-box 二进制，**mixed 代理** + wg endpoint + DNS 分流
 
+> 推荐使用 **Rust CLI** (`gnp-client` / `gnp-server`) 管理，bash 脚本作为参考/应急保留。
+
+---
+
+## Step 0: 安装 gnp CLI（推荐）
+
+在任意机器构建并安装到系统 PATH：
+
+```bash
+# 克隆项目 (含 submodule)
+git clone --recurse-submodules <repo-url>
+cd global-net-proxy
+
+# 构建 + 安装
+bash bash/install.sh
+
+# 验证
+gnp-client --version   # gnp-client 0.1.0
+gnp-server --version   # gnp-server 0.1.0
+
+# 卸载
+bash bash/uninstall.sh
+```
+
 ---
 
 ## Step 1: 部署 Server（lwtop）
 
-在 lwtop（8.209.203.17, Ubuntu 24.04）上：
+### 方式 A：Rust CLI（推荐）
 
 ```bash
-# 上传脚本
-scp bash/server/server.sh lw:~/
-
-# 安装 (交互式)
-sudo bash server.sh --install
+sudo gnp-server install          # 安装 wireguard + 生成密钥 + 配置 NAT + 开机自启
+sudo gnp-server status           # 查看状态
+sudo gnp-server add-peer macbook # 添加客户端
+sudo gnp-server pregen 20        # 预生成 peer 池
+sudo gnp-server activate <id>    # 激活预生成的 peer
+sudo gnp-server uninstall        # 卸载
 ```
 
 安装完成后会生成：
@@ -31,12 +56,12 @@ sudo bash server.sh --install
 **添加客户端**（每台要接入的机器）：
 
 ```bash
-sudo bash server.sh --add-peer macbook    # 生成一个客户端
-sudo bash server.sh --add-peer aipro
-sudo bash server.sh --add-peer win-01
+sudo gnp-server add-peer macbook    # 生成一个客户端
+sudo gnp-server add-peer aipro
+sudo gnp-server add-peer win-01
 ```
 
-每次 `--add-peer` 会输出该客户端的：
+每次 `add-peer` 会输出该客户端的：
 - 私钥 `private_key`
 - 地址 `address`（如 10.0.0.5/32）
 - server 公钥 `server_public_key`
@@ -48,38 +73,34 @@ sudo bash server.sh --add-peer win-01
 
 ## Step 2: 部署 Client
 
-### 通用（交互式）
+### 方式 A：Rust CLI（推荐）
 
 ```bash
-# 上传到目标机器
-scp -r bash/client root@client-ip:/opt/global-net-proxy/
+# 安装 sing-box (需先下载二进制到 ~/.local/share/sing-box/sing-box)
+# 生成 config.json (参考 config/safe-template.json, 填入 server 公钥+本机私钥+IP)
 
-# 交互式安装 (会提示输入 server/密钥/IP)
-bash /opt/global-net-proxy/client.sh --install
-
-# 先跑 10 秒测试 (验证配置无错, 安全)
-bash /opt/global-net-proxy/client.sh --test
-
-# 启动
-bash /opt/global-net-proxy/client.sh --start
-
-# 查看状态
-bash /opt/global-net-proxy/client.sh --status
+gnp-client start       # 启动 (开机自启)
+gnp-client status      # 查看状态
+gnp-client wg          # wg 隧道诊断
+gnp-client test        # 测试连通性
+gnp-client config --check  # 校验配置安全
 ```
 
-### 全自动（脚本化，适合多机批量）
+### 自动注册（推荐，多机批量）
+
+新机器用 `gnp-client register <client_id>` 从 gitee peer 池一键注册：
 
 ```bash
-SERVER=8.209.203.17 \
-WG_PUBKEY=<server公钥> \
-CLIENT_PRIVKEY=<本机私钥> \
-CLIENT_IP=10.0.0.5/32 \
-bash client.sh --install-auto
+export GITEE_TOKEN=xxxx
+gnp-client register ningsure
+# 自动: 拉取 peer → 标记 used → 生成 config → 安装 sing-box → 提示激活
 ```
+
+> 详见 `docs/auto-registration.md`。
 
 ### systemd 常驻（Linux）
 
-`--install` 会自动生成 `~/.config/systemd/user/sing-box-gnp.service`：
+`gnp-client start` 会自动生成 `~/.config/systemd/user/sing-box-gnp.service`：
 - **User**: 当前用户（非 root）
 - **Restart**: `on-failure`（非 always）
 
@@ -165,7 +186,7 @@ curl -x socks5://127.0.0.1:1080 -s ifconfig.me
 curl -s -o /dev/null -w "%{http_code}\n" https://www.baidu.com   # 200
 
 # 确认 sing-box 运行中
-bash client.sh --status
+gnp-client status
 ```
 
 ---
@@ -173,7 +194,7 @@ bash client.sh --status
 ## 常见问题
 
 **Q: curl 报 Connection refused?**
-sing-box 未启动或端口不对。确认 `client.sh --status` 显示运行中，端口是 1080。
+sing-box 未启动或端口不对。确认 `gnp-client status` 显示运行中，端口是 1080。
 
 **Q: DNS 解析延迟高？**
 国外域名走 `https://1.1.1.1`（经 wg），首次解析较慢但会缓存。
@@ -189,9 +210,10 @@ geosite 分类覆盖大部分，但小众域名可能没有。可临时在 route
 ## 卸载
 
 ```bash
-# client (会同时清理 systemd service)
-bash client.sh --uninstall
+# client (会同时清理 sing-box + systemd service)
+gnp-client stop
+bash uninstall.sh --clean
 
 # server
-sudo bash server.sh --uninstall
+sudo gnp-server uninstall
 ```

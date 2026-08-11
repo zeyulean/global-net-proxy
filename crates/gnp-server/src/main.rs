@@ -2,6 +2,7 @@
 //!
 //! 管理 WireGuard server (内核 wg0):
 //! - install:  安装 wg + 配置 + NAT
+//! - uninstall: 卸载 (停止服务/删配置/移除包)
 //! - status:   查看状态 (wg0/peers/握手)
 //! - peers:    列出所有客户端
 //! - add-peer: 添加客户端
@@ -18,8 +19,20 @@ use std::process::Command;
 use gnp_core::wg;
 
 /// global-net-proxy server — WireGuard server 管理
+///
+/// 管理内核 wg0: 安装/状态/客户端管理/peer 池。
+/// 需要 root 权限 (wg set / iptables)。
+///
+/// 快速开始:
+///   sudo gnp-server install            # 安装 + NAT + 开机自启
+///   sudo gnp-server add-peer macbook   # 添加客户端
 #[derive(Parser)]
-#[command(name = "gnp-server", version, about = "global-net-proxy server (WireGuard)")]
+#[command(
+    name = "gnp-server",
+    version,
+    about = "global-net-proxy server (WireGuard)",
+    long_about = "管理 WireGuard server (内核 wg0)。需要 root 权限 (wg set / iptables)。\n\n配置: /etc/wireguard/wg0.conf\n端口: 51820\n网段: 10.99.0.0/24"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -28,22 +41,38 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// 安装 WireGuard server (wg + NAT + 开机自启)
+    ///
+    /// 安装 wireguard, 生成密钥, 写 wg0.conf, 配置 NAT, 开机自启。
     Install,
+    /// 卸载 WireGuard server
+    ///
+    /// 停止并禁用 wg0, 删除配置/client 密钥/pending peers, 移除 wireguard-tools。
+    Uninstall,
     /// 查看状态 (wg0/peers/握手)
+    ///
+    /// 显示 wg0 接口详情, 所有 peer 的握手时间/传输量。
     Status,
     /// 列出所有已注册客户端
+    ///
+    /// 显示所有 peer 的公钥。
     Peers,
     /// 添加一个客户端 (生成配置)
+    ///
+    /// 生成客户端密钥 + 分配 IP + 加入 wg0, 输出客户端配置文件。
     AddPeer {
         /// 客户端名称
         name: String,
     },
     /// 预生成 N 个 peer 配置包 (不入 wg0)
+    ///
+    /// 批量生成待用 peer 配置 (存 /etc/wireguard/pending-peers/), 不占资源。
     Pregen {
         /// 数量
         count: u32,
     },
     /// 激活一个预生成的 peer (加入 wg0)
+    ///
+    /// 从 pending-peers 取配置, 加入 wg0 runtime + 持久化。
     Activate {
         /// client_id
         id: String,
@@ -62,6 +91,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Install => cmd_install(),
+        Commands::Uninstall => cmd_uninstall(),
         Commands::Status => cmd_status(),
         Commands::Peers => cmd_peers(),
         Commands::AddPeer { name } => cmd_add_peer(&name),
@@ -148,6 +178,36 @@ fn cmd_install() -> Result<()> {
     println!("  公钥: {}", pubkey.trim());
     println!("  出口网卡: {}", iface);
     println!("\n下一步: gnp-server add-peer <名称> 添加客户端");
+    Ok(())
+}
+
+/// 卸载 server
+fn cmd_uninstall() -> Result<()> {
+    check_root()?;
+    println!("== 卸载 WireGuard server ==");
+
+    // 停止并禁用 wg0
+    println!("🛑 停止 wg-quick@wg0...");
+    let _ = Command::new("systemctl").args(["stop", "wg-quick@wg0"]).status();
+    let _ = Command::new("systemctl")
+        .args(["disable", "wg-quick@wg0"])
+        .status();
+
+    // 删除配置/密钥/pending peers
+    println!("🗑️  删除配置和密钥...");
+    let wg_dir = "/etc/wireguard";
+    let _ = std::fs::remove_file(WG_CONF);
+    let _ = std::fs::remove_file(format!("{}/server.key", wg_dir));
+    let _ = std::fs::remove_file(format!("{}/server.pub", wg_dir));
+    let _ = std::fs::remove_dir_all(PENDING_DIR);
+
+    // 移除 wireguard-tools
+    println!("📦 移除 wireguard-tools...");
+    let _ = Command::new("apt")
+        .args(["remove", "-y", "-qq", "wireguard-tools"])
+        .status();
+
+    println!("✅ 已卸载");
     Ok(())
 }
 

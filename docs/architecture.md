@@ -65,6 +65,8 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 | `wg-quick` (原生 wireguard-tools) | **server** (lwtop) | wg server + NAT 转发 |
 | `sing-box` (二进制) | **client** | mixed 代理端口 + DNS 分流 + wg endpoint (userspace) + route 规则 |
 | geosite/geoip 规则集 | client | 判断国内外域名的依据，remote rule-set 自动更新 |
+| `gnp-client` (Rust CLI) | **client** | 管理 sing-box (start/stop/status/wg/config/test) |
+| `gnp-server` (Rust CLI) | **server** | 管理 wg server (install/peers/add-peer/pregen/activate) |
 
 ## sing-box 配置要点 (1.12+)
 
@@ -103,17 +105,30 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 
 ```
 global-net-proxy/
+├── Cargo.toml              # Cargo workspace 根
+├── crates/
+│   ├── gnp-core/           # 共享库: 平台/config/wg 诊断/服务管理
+│   ├── gnp-client/         # client CLI (install/start/stop/status/wg/config/test/register/update-rules/cleanup/recover)
+│   └── gnp-server/         # server CLI (install/uninstall/status/peers/add-peer/pregen/activate)
+├── vendor/
+│   └── sing-box/           # submodule: sing-box 源码
+├── bin/                    # 构建产物 (gitignore)
 ├── bash/
-│   ├── server/
-│   │   └── server.sh          # wg server 一键管理 (Ubuntu)
+│   ├── install.sh          # 构建 + 安装所有依赖到安装目录
+│   ├── uninstall.sh        # 卸载
 │   └── client/
-│       ├── client.sh          # sing-box client 跨平台管理 (mixed 模式)
-│       └── update-rules.sh    # 规则更新 + 常驻检查 + cron
+│       ├── cleanup-aipro.sh    # (应急) aipro 事故清理兜底
+│       └── recover-aipro-network.sh  # (应急) 断网恢复兜底
 ├── config/
-│   └── safe-template.json     # 安全配置模板 (mixed + wg endpoint)
+│   └── safe-template.json  # 安全配置模板 (mixed + wg endpoint)
 ├── docs/
-│   ├── architecture.md        # 本文档
-│   ├── setup.md               # 各端安装指南
+│   ├── architecture.md     # 本文档
+│   ├── setup.md            # 各端安装指南
+│   ├── auto-registration.md# 自动注册方案
 │   └── incident-2026-08-10.md # aipro 断网事故记录
-└── readme.md
+└── peers/
+    └── SERVER_PUBKEY       # server 公钥 (可公开)
+    # slot-*.json           # peer 池 (含私钥), 只存 gitee 私有仓库, 不进公开 repo
 ```
+
+> `bash/` 仅保留应急兜底脚本（断网时 Rust 二进制无法运行）。正式管理使用 Rust CLI (`gnp-client` / `gnp-server`)。

@@ -7,6 +7,7 @@
 //! - wg:       WireGuard 隧道诊断
 
 pub mod config;
+pub mod install;
 pub mod platform;
 pub mod service;
 pub mod wg;
