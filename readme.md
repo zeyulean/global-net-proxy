@@ -29,7 +29,7 @@
      └──国内域名/IP──▶ 直连 (不经过代理)
 ```
 
-详见 [docs/architecture.md](docs/architecture.md)
+详见 [docs/architecture.md](docs/architecture.md) | **[docs/usage.md](docs/usage.md)（完整使用手册）**
 
 ## 快速开始（Rust CLI）
 
@@ -84,14 +84,32 @@ gnp-client update-rules --install-cron  # 每日自动更新规则
 
 ### 3. 使用代理
 
+#### macOS（系统代理）
+
 ```bash
+gnp-client proxy --on       # 开启系统代理 (osascript 弹授权, 不存密码)
+gnp-client proxy --status   # 查看代理状态
+gnp-client proxy --off      # 关闭系统代理
+```
+
+> 开启后 Safari / Chrome 等浏览器自动走 sing-box 代理。
+
+#### Linux（环境变量 / GNOME）
+
+```bash
+# 方式 A: 环境变量（终端程序）
 export http_proxy=http://127.0.0.1:1080
 export https_proxy=http://127.0.0.1:1080
 export all_proxy=socks5://127.0.0.1:1080
 
+# 方式 B: GNOME 系统代理
+gnp-client proxy --on
+
 # 或单次
-curl -x socks5://127.0.0.1:1080 https://www.google.com
+curl -x socks5h://127.0.0.1:1080 https://www.google.com
 ```
+
+> 💡 完整命令说明请参阅 [docs/usage.md](docs/usage.md)
 
 ## 应急脚本
 

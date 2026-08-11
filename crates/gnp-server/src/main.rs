@@ -31,7 +31,22 @@ use gnp_core::wg;
     name = "gnp-server",
     version,
     about = "global-net-proxy server (WireGuard)",
-    long_about = "管理 WireGuard server (内核 wg0)。需要 root 权限 (wg set / iptables)。\n\n配置: /etc/wireguard/wg0.conf\n端口: 1194\n网段: 10.0.0.0/24"
+    long_about = "管理 WireGuard server (内核 wg0)。需要 root 权限 (wg set / iptables)。\n\
+        \n\
+        配置: /etc/wireguard/wg0.conf\n\
+        端口: 1194 (UDP)\n\
+        网段: 10.0.0.0/24\n\
+        pending-peers: /etc/wireguard/pending-peers/\n\
+        \n\
+        常用命令:\n\
+        \n  \
+        sudo gnp-server install           安装 wg + NAT + 开机自启\n  \
+        sudo gnp-server status            查看 wg0 状态\n  \
+        sudo gnp-server add-peer <名称>   添加客户端\n  \
+        sudo gnp-server pregen <N>        预生成 peer 池\n  \
+        sudo gnp-server activate <id>     激活预生成的 peer\n\
+        \n\
+        详见: docs/usage.md"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -41,38 +56,81 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// 安装 WireGuard server (wg + NAT + 开机自启)
-    ///
-    /// 安装 wireguard, 生成密钥, 写 wg0.conf, 配置 NAT, 开机自启。
+    #[command(long_about = "安装 WireGuard server, 包括软件包、密钥、配置、NAT、开机自启。\n\n\
+        安装步骤:\n  \
+        1. apt install wireguard wireguard-tools\n  \
+        2. 生成 server 密钥 (wg genkey / wg pubkey)\n  \
+        3. 写 /etc/wireguard/wg0.conf (IP=10.0.0.1/24, Port=1194)\n  \
+        4. systemctl enable --now wg-quick@wg0\n  \
+        5. 配置 NAT (iptables MASQUERADE + ip_forward=1)\n\n\
+        注意: 需要在云服务商安全组放行 UDP 1194。\n\n\
+        示例:\n  \
+        sudo gnp-server install")]
     Install,
     /// 卸载 WireGuard server
-    ///
-    /// 停止并禁用 wg0, 删除配置/client 密钥/pending peers, 移除 wireguard-tools。
+    #[command(long_about = "完全卸载 WireGuard server。\n\n\
+        卸载内容:\n  \
+        1. 停止并禁用 wg-quick@wg0\n  \
+        2. 删除 /etc/wireguard/wg0.conf\n  \
+        3. 删除 server 密钥 (server.key / server.pub)\n  \
+        4. 删除 pending-peers 目录\n  \
+        5. 移除 wireguard-tools 包\n\n\
+        示例:\n  \
+        sudo gnp-server uninstall")]
     Uninstall,
     /// 查看状态 (wg0/peers/握手)
-    ///
-    /// 显示 wg0 接口详情, 所有 peer 的握手时间/传输量。
+    #[command(long_about = "查看 wg0 接口状态和 peer 信息。\n\n\
+        输出内容:\n  \
+        - wg0 是否激活\n  \
+        - wg show wg0 原始输出 (接口详情/peer 握手时间/传输量)\n\n\
+        示例:\n  \
+        sudo gnp-server status")]
     Status,
     /// 列出所有已注册客户端
-    ///
-    /// 显示所有 peer 的公钥。
+    #[command(long_about = "列出所有已注册的客户端 peer 公钥。\n\n\
+        示例:\n  \
+        sudo gnp-server peers")]
     Peers,
     /// 添加一个客户端 (生成配置)
-    ///
-    /// 生成客户端密钥 + 分配 IP + 加入 wg0, 输出客户端配置文件。
+    #[command(long_about = "为新客户端生成密钥、分配 IP 并加入 wg0。\n\n\
+        行为:\n  \
+        1. 生成客户端密钥对 (wg genkey / wg pubkey)\n  \
+        2. 分配客户端 IP (10.0.0.x)\n  \
+        3. wg set 加入 wg0 运行时\n  \
+        4. 持久化到 wg0.conf\n  \
+        5. 输出客户端配置 (含私钥, 注意安全传输)\n\n\
+        示例:\n  \
+        sudo gnp-server add-peer macbook\n  \
+        sudo gnp-server add-peer aipro")]
     AddPeer {
         /// 客户端名称
         name: String,
     },
     /// 预生成 N 个 peer 配置包 (不入 wg0)
-    ///
-    /// 批量生成待用 peer 配置 (存 /etc/wireguard/pending-peers/), 不占资源。
+    #[command(long_about = "批量生成待用 peer 配置包, 不占运行时资源。\n\n\
+        行为:\n  \
+        - 为每个 peer 生成密钥对和 IP\n  \
+        - 存为 JSON 到 /etc/wireguard/pending-peers/<id>.json\n  \
+        - JSON 包含: id, status=available, 密钥, IP, server 信息\n\n\
+        用途: 配合 gnp-client register 实现新机器自动注册。\n\
+        将 peers/ 推送到 gitee 私有仓库后, 客户端可自动取用。\n\n\
+        示例:\n  \
+        sudo gnp-server pregen 20")]
     Pregen {
         /// 数量
         count: u32,
     },
     /// 激活一个预生成的 peer (加入 wg0)
-    ///
-    /// 从 pending-peers 取配置, 加入 wg0 runtime + 持久化。
+    #[command(long_about = "将 pending-peers 中的 peer 加入 wg0 运行时。\n\n\
+        行为:\n  \
+        1. 从 /etc/wireguard/pending-peers/<id>.json 读取配置\n  \
+        2. wg set 加入 wg0 运行时\n  \
+        3. 持久化到 wg0.conf\n  \
+        4. 更新 JSON 状态为 activated\n\n\
+        重要: gnp-client register 完成后, 必须执行此命令,\n\
+        否则客户端无法连通。\n\n\
+        示例:\n  \
+        sudo gnp-server activate macbook")]
     Activate {
         /// client_id
         id: String,

@@ -27,7 +27,27 @@ use gnp_core::{config, install, platform, proxy, service, wg};
     name = "gnp-client",
     version,
     about = "global-net-proxy client (sing-box mixed 代理)",
-    long_about = "管理本机 sing-box mixed 代理 (wg 隧道)。\n\n安全原则: 只用 mixed 代理模式 (socks5+http on 127.0.0.1:1080), 不碰路由表, 零断网风险。绝不用 tun 模式。\n\n数据目录: ~/.local/share/sing-box/\n- 二进制:  sing-box\n- 配置:    config.json\n- 规则集:  rules/*.srs"
+    long_about = "管理本机 sing-box mixed 代理 (wg 隧道)。\n\
+        \n\
+        安全原则: 只用 mixed 代理模式 (socks5+http on 127.0.0.1:1080),\n\
+        不碰路由表, 零断网风险。绝不用 tun 模式。\n\
+        \n\
+        数据目录: ~/.local/share/sing-box/\n\
+        - 二进制:  sing-box\n\
+        - 配置:    config.json\n\
+        - 规则集:  rules/*.srs\n\
+        \n\
+        常用命令:\n\
+        \n  \
+        gnp-client start           启动代理 (注册开机自启)\n  \
+        gnp-client stop            停止代理\n  \
+        gnp-client status          查看状态 (进程/端口/隧道/出口IP)\n  \
+        gnp-client wg              WireGuard 隧道诊断\n  \
+        gnp-client test            测试代理连通性\n  \
+        gnp-client config --check  校验配置安全\n  \
+        gnp-client proxy --on      开启系统代理 (macOS)\n\
+        \n\
+        详见: docs/usage.md"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -37,18 +57,42 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// 启动 sing-box 代理 (开机自启)
-    ///
-    /// macOS 用 launchctl, Linux 用 systemd 注册为开机自启服务。
+    #[command(long_about = "启动 sing-box 代理服务并注册为开机自启。\n\n\
+        平台行为:\n  \
+        macOS  → launchctl load (KeepAlive=true, 崩溃自动重启)\n  \
+        Linux → systemctl start gnp-proxy (自动创建 unit 如不存在)\n\n\
+        启动后代理监听 0.0.0.0:1080 (socks5+http)。\n\n\
+        示例:\n  \
+        gnp-client start")]
     Start,
     /// 停止 sing-box 代理
-    ///
-    /// 卸载 launchctl/systemd 服务并杀掉残留进程。
+    #[command(long_about = "停止 sing-box 代理服务, 卸载开机自启并杀掉残留进程。\n\n\
+        平台行为:\n  \
+        macOS  → launchctl unload + pkill sing-box run\n  \
+        Linux → systemctl stop gnp-proxy\n\n\
+        示例:\n  \
+        gnp-client stop")]
     Stop,
     /// 查看状态 (进程/端口/隧道/出口IP)
-    ///
-    /// 显示: 安装状态, 进程状态, 端口 1080, 配置安全检查, wg 隧道出口。
+    #[command(long_about = "显示完整的代理运行状态。\n\n\
+        输出内容:\n  \
+        1. 安装状态 (sing-box 二进制 + config.json)\n  \
+        2. 进程状态 (是否运行中)\n  \
+        3. 端口 1080 是否在监听\n  \
+        4. 配置安全检查 (无 tun/strict_route, 有 mixed+wg)\n  \
+        5. 隧道出口 IP 和延迟 (如果运行中)\n\n\
+        示例:\n  \
+        gnp-client status")]
     Status,
     /// 查看/校验配置
+    #[command(long_about = "查看 sing-box 配置文件内容, 或校验配置是否安全。\n\n\
+        校验项:\n  \
+        - 无 tun/strict_route/auto_route (危险配置检测)\n  \
+        - 有 mixed inbound (socks5+http)\n  \
+        - 有 wg endpoint (WireGuard outbound)\n\n\
+        示例:\n  \
+        gnp-client config --check   # 校验配置安全性\n  \
+        gnp-client config --show    # 显示完整 JSON 配置")]
     Config {
         /// 显示完整配置内容
         #[arg(long)]
@@ -58,17 +102,39 @@ enum Commands {
         check: bool,
     },
     /// wg 隧道诊断
-    ///
-    /// 显示隧道配置 (本机IP/远端server/MTU), 检测出口 IP, 测试 github/google。
+    #[command(long_about = "显示 WireGuard 隧道配置详情并测试连通性。\n\n\
+        输出内容:\n  \
+        1. 隧道配置 (本机 wg IP / 远端 server:port / MTU / 密钥状态)\n  \
+        2. 隧道连通性 (通过 socks5h 检测出口 IP 和延迟)\n  \
+        3. 代理测试 (github + google HTTP 状态码)\n\n\
+        示例:\n  \
+        gnp-client wg")]
     Wg,
     /// 测试代理连通性
-    ///
-    /// 检测出口 IP + 测试 github/google 是否可访问。
+    #[command(long_about = "快速测试代理是否可用。\n\n\
+        测试内容:\n  \
+        1. 通过 socks5h://127.0.0.1:1080 检测出口 IP\n  \
+        2. 测试 github (api.github.com/zen)\n  \
+        3. 测试 google (www.google.com)\n\n\
+        使用 socks5h (带 h) 表示 DNS 在代理端远程解析, 避免本地 DNS 污染。\n\n\
+        示例:\n  \
+        gnp-client test")]
     Test,
     /// 安装 sing-box + 规则集 + 生成配置
-    ///
-    /// 下载 sing-box 二进制, 下载规则集, 生成 mixed+wg 配置。
-    /// 需要提供 server 地址/公钥/本机私钥/IP。
+    #[command(long_about = "下载 sing-box 二进制 + 规则集, 生成 mixed+wg 配置。\n\n\
+        行为步骤:\n  \
+        1. 下载 sing-box v1.12.3 (非 1.13, endpoint wg 有 bug)\n  \
+        2. 下载规则集 (geosite-cn, geoip-cn, google, github, openai 等)\n  \
+        3. 生成 config.json (mixed + wg outbound 格式)\n  \
+        4. Linux 自动安装 systemd 系统级服务\n\n\
+        需要 server 地址/公钥/本机私钥/IP。\n\n\
+        示例:\n  \
+        gnp-client install \\\n    \
+        --server 8.209.203.17 \\\n    \
+        --server-pubkey M/t3YYw... \\\n    \
+        --client-privkey <你的私钥> \\\n    \
+        --client-ip 10.0.0.5/32\n\n\
+        注意: 私钥需要安全传输, 不要泄露。")]
     Install {
         /// 远端 wg server 地址 (IP 或域名)
         #[arg(long)]
@@ -90,11 +156,21 @@ enum Commands {
         bin_only: bool,
     },
     /// 自动注册新机器 (从 gitee peer 池取配置)
-    ///
-    /// 从 gitee 私有仓库拉取预生成的 peer 配置池, 挑一个未使用的,
-    /// 标记为 used 并 push, 然后自动安装 sing-box + 生成配置。
-    ///
-    /// 需要 GITEE_TOKEN 环境变量。
+    #[command(long_about = "从 gitee 私有仓库的 peer 池自动取配置, 一键完成安装。\n\n\
+        工作流程:\n  \
+        1. 克隆 gitee 私有仓库 (需要 GITEE_TOKEN)\n  \
+        2. 读取 peers/ 目录下的 peer JSON\n  \
+        3. 选择一个 status=available 的 peer\n  \
+        4. 标记为 used 并 push 回 gitee\n  \
+        5. 生成 config.json + 下载 sing-box + 规则集\n  \
+        6. 安装 systemd 服务 (Linux)\n\n\
+        重要: register 完成后, 需要在 server 上执行:\n  \
+        sudo gnp-server activate <client_id>\n\n\
+        示例:\n  \
+        export GITEE_TOKEN=xxxx\n  \
+        gnp-client register --client-id macbook\n  \
+        gnp-client register --list       # 查看 peer 池\n  \
+        gnp-client register --dry-run    # 试运行")]
     Register {
         /// client_id (可选, 默认用 hostname)
         #[arg(long)]
@@ -107,6 +183,15 @@ enum Commands {
         dry_run: bool,
     },
     /// 规则集更新 + sing-box 守护
+    #[command(long_about = "更新 sing-box 规则集 (geosite/geoip), 或检查守护进程。\n\n\
+        三种模式 (互斥, 按顺序匹配):\n  \
+        --install-cron  安装 crontab (每天 04:00 检查)\n  \
+        --update        强制重启 sing-box (触发 remote rule-set 重新拉取)\n  \
+        --check / 默认   检查 sing-box 是否运行, 挂了就重启\n\n\
+        示例:\n  \
+        gnp-client update-rules                  # 检查并守护\n  \
+        gnp-client update-rules --update         # 强制更新规则集\n  \
+        gnp-client update-rules --install-cron   # 安装每日 cron")]
     UpdateRules {
         /// 强制更新规则集并重启
         #[arg(long)]
@@ -119,19 +204,42 @@ enum Commands {
         install_cron: bool,
     },
     /// 应急清理 (参考 aipro 事故)
-    ///
-    /// 彻底清理 sing-box: 停服务、杀进程、清 tun/策略路由、
-    /// 备份配置。用于 tun 模式破坏路由后的恢复。
+    #[command(long_about = "彻底清理 sing-box 所有残留。\n\n\
+        参考: aipro 2026-08-10 sing-box tun 破坏路由导致完全断网事故。\n\n\
+        清理步骤 (6 步):\n  \
+        1. 停止 sing-box 服务 + 杀进程\n  \
+        2. 禁用开机自启\n  \
+        3. 清理残留 tun 接口 (gnp0, tun0)\n  \
+        4. 清理策略路由 (ip rule priority 9000-9010, table 2022)\n  \
+        5. 恢复主网卡默认路由\n  \
+        6. 备份并禁用 sing-box 数据目录\n\n\
+        注意: 此命令会彻底清除 sing-box, 之后需重新安装。\n\n\
+        示例:\n  \
+        gnp-client cleanup")]
     Cleanup,
     /// 断网恢复 (参考 aipro 事故)
-    ///
-    /// sing-box tun 破坏路由后恢复网络: 停服务、清策略路由、
-    /// 恢复默认路由、清 tun 接口、恢复 DNS。
+    #[command(long_about = "sing-box tun 模式破坏路由表后的网络恢复工具。\n\n\
+        恢复步骤 (5 步):\n  \
+        1. 停止 sing-box 服务 (破坏路由的元凶)\n  \
+        2. 清理策略路由 (ip rule flush)\n  \
+        3. 清理独立路由表 (table 2022/100/200)\n  \
+        4. 恢复主网卡默认路由 (尝试常见网关)\n  \
+        5. 清理残留 tun 接口 (gnp0, tun0) + 恢复 DNS\n\n\
+        如果 recover 后仍不通, 直接 reboot 重启机器。\n\n\
+        示例:\n  \
+        gnp-client recover")]
     Recover,
     /// 系统代理开关 (macOS 系统代理 / Linux GNOME 代理)
-    ///
-    /// 设置或取消操作系统层面的代理，让浏览器 (Safari/Chrome) 等走 sing-box。
-    /// macOS 通过 osascript 弹管理员授权窗口，不存密码。
+    #[command(long_about = "设置或取消操作系统层面的代理, 让浏览器等 GUI 程序走 sing-box。\n\n\
+        平台差异:\n  \
+        macOS  → networksetup + osascript 弹管理员授权 (不存密码)\n  \
+                 设置 HTTP/HTTPS/SOCKS 代理为 127.0.0.1:1080\n  \
+        Linux  → gsettings 设置 GNOME 系统代理 (manual 模式)\n  \
+                 无 GNOME 时提示 export 环境变量\n\n\
+        示例:\n  \
+        gnp-client proxy --on      # 开启系统代理\n  \
+        gnp-client proxy --off     # 关闭系统代理\n  \
+        gnp-client proxy --status  # 查看当前状态")]
     Proxy {
         /// 开启系统代理
         #[arg(long)]
