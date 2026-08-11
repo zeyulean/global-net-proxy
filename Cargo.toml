@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gnp-core",
+    "crates/gnp-client",
+    "crates/gnp-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["zeyulean"]
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "5"
+anyhow = "1"
+thiserror = "1"
+# gnp-core 内部依赖
+gnp-core = { path = "crates/gnp-core" }
+
+# 共享的 sing-box 相关 (通过 submodule 构建, 或直接调二进制)
+# 注意: 我们不通过 cargo 依赖 sing-box 源码 (它很大且用 Go),
+# 而是通过 submodule 单独构建 sing-box 二进制, gnp 封装其 CLI。

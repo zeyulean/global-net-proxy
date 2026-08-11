@@ -1,0 +1,14 @@
+[package]
+name = "gnp-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "global-net-proxy 共享核心库 — 平台抽象 / config 解析 / wg 诊断 / 服务管理"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+thiserror = { workspace = true }
