@@ -11,7 +11,7 @@
 - 🔄 **规则自动更新**：geosite/geoip 规则集每 24h 自动更新（sing-box remote rule-set）
 - 🛡️ **WireGuard 加密**：userspace 实现（system:false），不需要内核模块，不需要 root
 - 🔒 **mixed 代理模式（安全）**：只开 socks5+http 端口 1080，**绝不使用 tun 模式**
-- 💻 **跨平台 client**：Ubuntu / macOS / Windows 一套脚本
+- 💻 **Rust CLI**：client + server 统一管理，跨平台（macOS launchd / Linux systemd）
 
 ## ⚠️ 安全原则
 
@@ -30,47 +30,58 @@
 
 详见 [docs/architecture.md](docs/architecture.md)
 
-## 快速开始
+## 快速开始（Rust CLI）
 
-### 方式一：自动注册（推荐）
+### 0. 安装 gnp CLI
 
 ```bash
-# 0. 管理员在 lwtop 上预生成 peer 池
-sudo bash server.sh --pre-gen 20
+# 构建 + 安装到系统 PATH
+bash install.sh
 
-# 1. 新机器一键注册（需要 GITEE_TOKEN）
-export GITEE_TOKEN=xxxx
-bash bash/client/register.sh ningsure
+# 验证
+gnp-client --version   # gnp-client 0.1.0
+gnp-server --version   # gnp-server 0.1.0
 
-# 2. 管理员在 lwtop 上激活
-sudo bash server.sh --activate ningsure
-
-# 3. 启动代理
-bash bash/client/client.sh --start
-export http_proxy=http://127.0.0.1:1080
+# 卸载
+bash uninstall.sh           # 移除软链
+bash uninstall.sh --clean   # 移除软链 + 删除 bin/ 产物
 ```
 
-详见 [docs/auto-registration.md](docs/auto-registration.md)
-
-### 方式二：手动安装
+### 1. 部署 server（lwtop/Ubuntu）
 
 ```bash
-# 1. 部署 server (lwtop/Ubuntu)
-scp bash/server/server.sh lw:~/
-sudo bash server.sh --install
-sudo bash server.sh --add-peer macbook
+sudo gnp-server install          # 安装 wg + NAT + 开机自启
+sudo gnp-server status           # 查看状态
+sudo gnp-server add-peer macbook # 添加客户端
+sudo gnp-server pregen 20        # 预生成 20 个 peer 池
+sudo gnp-server activate <id>    # 激活预生成的 peer
+```
 
-# 2. 部署 client (Mac/Ubuntu/Windows)
-bash client.sh --install       # 交互式安装
-bash client.sh --test          # 先跑 10 秒测试
-bash client.sh --start         # 启动
+### 2. 部署 client（Mac/Ubuntu）
 
-# 3. 使用代理
+```bash
+gnp-client start    # 启动 sing-box 代理（开机自启）
+gnp-client stop     # 停止
+gnp-client status   # 查看状态（进程/端口/隧道/出口IP）
+gnp-client wg       # wg 隧道诊断
+gnp-client config --check  # 校验配置安全
+gnp-client test     # 测试代理连通性
+```
+
+### 3. 使用代理
+
+```bash
 export http_proxy=http://127.0.0.1:1080
 export https_proxy=http://127.0.0.1:1080
+export all_proxy=socks5://127.0.0.1:1080
+
+# 或单次
+curl -x socks5://127.0.0.1:1080 https://www.google.com
 ```
 
-详见 [docs/setup.md](docs/setup.md)
+## 手动安装（bash 脚本，参考）
+
+项目保留 bash 脚本作为参考（`bash/` 目录），功能与 Rust CLI 等价。
 
 ## Server 信息（公开）
 
@@ -82,17 +93,26 @@ export https_proxy=http://127.0.0.1:1080
 
 > Server 公钥可以公开，不影响安全性。Client 私钥存在 gitee 私有仓库。
 
-## 目录
+## 目录结构
 
 ```
-bash/server/        wg server 一键管理 (Ubuntu)
-bash/client/        sing-box client 跨平台管理 (mixed 模式)
-  ├── client.sh     手动安装
-  └── register.sh   自动注册（从 gitee peer 池取配置）
-config/             安全配置模板
-docs/               架构 + 安装指南 + 事故记录 + 自动注册方案
-peers/              预生成 peer 配置池（gitee 私有）
-SERVER_PUBKEY       server 公钥（可公开）
+├── Cargo.toml              # Cargo workspace 根
+├── crates/
+│   ├── gnp-core/           # 共享库: 平台/config/wg 诊断/服务管理
+│   ├── gnp-client/         # client CLI (start/stop/status/wg/config/test)
+│   └── gnp-server/         # server CLI (install/status/peers/add-peer/pregen/activate)
+├── vendor/
+│   └── sing-box/           # submodule: sing-box 源码
+├── bin/                    # 构建产物 (gitignore)
+├── install.sh              # 构建 + 安装到系统 PATH
+├── uninstall.sh            # 卸载
+├── bash/
+│   ├── server/             # (参考) wg server bash 脚本
+│   └── client/             # (参考) sing-box client bash 脚本
+├── config/                 # 安全配置模板
+├── docs/                   # 架构 + 安装指南 + 事故记录
+├── peers/                  # 预生成 peer 配置池（gitee 私有）
+└── SERVER_PUBKEY           # server 公钥（可公开）
 ```
 
 ## 仓库
