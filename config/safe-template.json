@@ -13,7 +13,8 @@
       {
         "tag": "dns-proxy",
         "address": "1.1.1.1",
-        "detour": "wg-out"
+        "detour": "wg-out",
+        "type": "tcp"
       }
     ],
     "rules": [

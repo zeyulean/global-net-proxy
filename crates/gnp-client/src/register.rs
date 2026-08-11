@@ -208,7 +208,7 @@ fn generate_conf(peer: &Peer) -> Result<()> {
         "dns": {
             "servers": [
                 { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
-                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "wg-out" }
+                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "wg-out", "type": "tcp" }
             ],
             "rules": [
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
