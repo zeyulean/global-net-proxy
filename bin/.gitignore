@@ -1,0 +1,3 @@
+# bin/ 存放构建产物 (gnp-client, gnp-server), 不提交到 git
+*
+!.gitignore
