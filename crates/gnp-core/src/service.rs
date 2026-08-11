@@ -42,6 +42,11 @@ pub fn launchd_plist_content() -> String {
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ENABLE_DEPRECATED_WIREGUARD_OUTBOUND</key>
+        <string>true</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/tmp/sing-box-gnp.log</string>
     <key>StandardErrorPath</key>
