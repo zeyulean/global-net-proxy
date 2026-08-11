@@ -9,6 +9,7 @@
 pub mod config;
 pub mod install;
 pub mod platform;
+pub mod proxy;
 pub mod service;
 pub mod wg;
 

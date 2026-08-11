@@ -11,7 +11,7 @@ mod update_rules;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use gnp_core::{config, install, platform, service, wg};
+use gnp_core::{config, install, platform, proxy, service, wg};
 
 /// global-net-proxy client — 管理 sing-box mixed 代理 (wg 隧道)
 ///
@@ -128,6 +128,21 @@ enum Commands {
     /// sing-box tun 破坏路由后恢复网络: 停服务、清策略路由、
     /// 恢复默认路由、清 tun 接口、恢复 DNS。
     Recover,
+    /// 系统代理开关 (macOS 系统代理 / Linux GNOME 代理)
+    ///
+    /// 设置或取消操作系统层面的代理，让浏览器 (Safari/Chrome) 等走 sing-box。
+    /// macOS 通过 osascript 弹管理员授权窗口，不存密码。
+    Proxy {
+        /// 开启系统代理
+        #[arg(long)]
+        on: bool,
+        /// 关闭系统代理
+        #[arg(long)]
+        off: bool,
+        /// 查看代理状态
+        #[arg(long)]
+        status: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -178,6 +193,7 @@ fn main() -> Result<()> {
         }
         Commands::Cleanup => cleanup::run(),
         Commands::Recover => recover::run(),
+        Commands::Proxy { on, off, status } => cmd_proxy(on, off, status),
     }
 }
 
@@ -363,7 +379,7 @@ fn cmd_wg() -> Result<()> {
 
     // 测试几个网站
     println!("\n🔍 代理测试:");
-    let proxy = "socks5://127.0.0.1:1080";
+    let proxy = "socks5h://127.0.0.1:1080";
     for (name, url) in [
         ("github", "https://api.github.com/zen"),
         ("google", "https://www.google.com"),
@@ -382,7 +398,7 @@ fn cmd_test() -> Result<()> {
     println!(
         "== 代理连通性测试 (socks5://127.0.0.1:1080) =="
     );
-    let proxy = "socks5://127.0.0.1:1080";
+    let proxy = "socks5h://127.0.0.1:1080";
     match test_proxy_simple() {
         Ok((ip, ms)) => println!("✅ 出口 IP: {} ({}ms)", ip, ms),
         Err(e) => {
@@ -404,6 +420,26 @@ fn cmd_test() -> Result<()> {
 
 // --- 辅助函数 ---
 
+/// 系统代理开关
+fn cmd_proxy(on: bool, off: bool, status: bool) -> Result<()> {
+    if on {
+        proxy::enable()?;
+    } else if off {
+        proxy::disable()?;
+    } else if status {
+        proxy::status()?;
+    } else {
+        // 无参数: 显示状态和用法
+        println!("== 系统代理管理 ==\n");
+        let _ = proxy::status();
+        println!("\n用法:");
+        println!("  gnp-client proxy --on      开启系统代理 (浏览器走 sing-box)");
+        println!("  gnp-client proxy --off     关闭系统代理");
+        println!("  gnp-client proxy --status  查看当前代理状态");
+    }
+    Ok(())
+}
+
 /// 检查端口是否监听
 fn check_port(port: u16) -> bool {
     let out = std::process::Command::new("lsof")
@@ -417,5 +453,5 @@ fn check_port(port: u16) -> bool {
 
 /// 简单出口检测
 fn test_proxy_simple() -> Result<(String, u64)> {
-    wg::detect_exit_ip("socks5://127.0.0.1:1080", 8)
+    wg::detect_exit_ip("socks5h://127.0.0.1:1080", 8)
 }
