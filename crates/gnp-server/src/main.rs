@@ -31,7 +31,7 @@ use gnp_core::wg;
     name = "gnp-server",
     version,
     about = "global-net-proxy server (WireGuard)",
-    long_about = "管理 WireGuard server (内核 wg0)。需要 root 权限 (wg set / iptables)。\n\n配置: /etc/wireguard/wg0.conf\n端口: 51820\n网段: 10.99.0.0/24"
+    long_about = "管理 WireGuard server (内核 wg0)。需要 root 权限 (wg set / iptables)。\n\n配置: /etc/wireguard/wg0.conf\n端口: 1194\n网段: 10.0.0.0/24"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -83,9 +83,9 @@ enum Commands {
 const WG_CONF: &str = "/etc/wireguard/wg0.conf";
 const WG_IFACE: &str = "wg0";
 const PENDING_DIR: &str = "/etc/wireguard/pending-peers";
-const WG_SUBNET: &str = "10.99.0.0/24";
-const SERVER_IP: &str = "10.99.0.1/24";
-const WG_PORT: &str = "51820";
+const WG_SUBNET: &str = "10.0.0.0/24";
+const SERVER_IP: &str = "10.0.0.1/24";
+const WG_PORT: &str = "1194";
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -414,10 +414,10 @@ fn alloc_client_ip() -> Result<String> {
             }
         }
     }
-    // 简化: 从 10.99.0.2 开始递增
+    // 简化: 从 10.0.0.2 开始递增
     let base = 2;
     // 用固定值 (实际应扫描)
-    Ok(format!("10.99.0.{}", base))
+    Ok(format!("10.0.0.{}", base))
 }
 
 /// 追加 peer 到 wg0.conf

@@ -12,6 +12,7 @@
 - 🛡️ **WireGuard 加密**：userspace 实现（system:false），不需要内核模块，不需要 root
 - 🔒 **mixed 代理模式（安全）**：只开 socks5+http 端口 1080，**绝不使用 tun 模式**
 - 💻 **Rust CLI**：client + server 统一管理，跨平台（macOS launchd / Linux systemd）
+- 📦 **sing-box 1.12.3**：使用 outbound wireguard 格式（1.13 endpoint wireguard 有 bug，降级到 1.12.3）
 
 ## ⚠️ 安全原则
 
@@ -102,7 +103,7 @@ curl -x socks5://127.0.0.1:1080 https://www.google.com
 
 | 项目 | 值 |
 |------|------|
-| Server 地址 | `8.209.203.17:51820` |
+| Server 地址 | `8.209.203.17:1194` |
 | Server 公钥 | `M/t3YYwIW7Xou+vASGtNoAHHNrh82ROzYDU4LIsLz18=` |
 | Client 网段 | `10.0.0.2` – `10.0.0.250` |
 

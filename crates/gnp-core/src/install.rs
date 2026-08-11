@@ -7,8 +7,8 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
-/// sing-box 版本
-pub const SB_VERSION: &str = "1.13.16";
+/// sing-box 版本 (1.13 endpoint wireguard 有 bug, 降级到 1.12.3 用 outbound wireguard)
+pub const SB_VERSION: &str = "1.12.3";
 
 /// 下载 URL 模板
 fn download_url(version: &str, os: &str, arch: &str) -> Result<String> {
@@ -158,7 +158,11 @@ pub fn install_rules() -> Result<()> {
     Ok(())
 }
 
-/// 生成 config.json (mixed 模式模板)
+/// 生成 config.json (mixed 模式模板, sing-box 1.12 outbound wireguard 格式)
+///
+/// 使用 outbound wireguard (1.12 旧格式), 需配合环境变量
+/// ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true 使用。
+/// DNS: 国外域名经 wg 走 1.1.1.1 UDP (非 DoH), 用 socks5h 远程解析。
 pub fn generate_config(
     server: &str,
     server_pubkey: &str,
@@ -170,8 +174,8 @@ pub fn generate_config(
         "log": { "level": "info", "timestamp": true },
         "dns": {
             "servers": [
-                { "tag": "dns-direct", "type": "udp", "server": "223.5.5.5" },
-                { "tag": "dns-proxy", "type": "https", "server": "1.1.1.1", "detour": "wg-ep" }
+                { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
+                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "wg-out" }
             ],
             "rules": [
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
@@ -179,28 +183,27 @@ pub fn generate_config(
             "final": "dns-proxy",
             "strategy": "prefer_ipv4"
         },
-        "endpoints": [{
-            "type": "wireguard",
-            "tag": "wg-ep",
-            "system": false,
-            "mtu": 1280,
-            "address": [client_ip],
-            "private_key": client_privkey,
-            "peers": [{
-                "address": server,
-                "port": wg_port,
-                "public_key": server_pubkey,
-                "allowed_ips": ["0.0.0.0/0"],
-                "persistent_keepalive_interval": 25
-            }]
-        }],
         "inbounds": [{
             "type": "mixed",
             "tag": "mixed-in",
-            "listen": "127.0.0.1",
+            "listen": "0.0.0.0",
             "listen_port": 1080
         }],
-        "outbounds": [{ "type": "direct", "tag": "direct" }],
+        "outbounds": [
+            {
+                "type": "wireguard",
+                "tag": "wg-out",
+                "local_address": [client_ip],
+                "private_key": client_privkey,
+                "peer_public_key": server_pubkey,
+                "server": server,
+                "server_port": wg_port,
+                "mtu": 1280,
+                "system": false,
+                "reserved": [0, 0, 0]
+            },
+            { "type": "direct", "tag": "direct" }
+        ],
         "route": {
             "rule_set": [
                 { "type": "local", "tag": "geosite-cn", "format": "binary", "path": sb_rules_dir().join("geosite-cn.srs").to_str().unwrap() },
@@ -210,8 +213,7 @@ pub fn generate_config(
                 { "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" },
                 { "ip_is_private": true, "outbound": "direct" }
             ],
-            "final": "wg-ep",
-            "default_domain_resolver": "dns-direct"
+            "final": "wg-out"
         }
     });
 

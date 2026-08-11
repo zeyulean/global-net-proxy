@@ -6,15 +6,14 @@
   "dns": {
     "servers": [
       {
-        "tag": "dns-proxy",
-        "type": "https",
-        "server": "1.1.1.1",
-        "detour": "wg-ep"
+        "tag": "dns-direct",
+        "address": "223.5.5.5",
+        "detour": "direct"
       },
       {
-        "tag": "dns-direct",
-        "type": "udp",
-        "server": "223.5.5.5"
+        "tag": "dns-proxy",
+        "address": "1.1.1.1",
+        "detour": "wg-out"
       }
     ],
     "rules": [
@@ -23,25 +22,6 @@
     "final": "dns-proxy",
     "strategy": "prefer_ipv4"
   },
-  "endpoints": [
-    {
-      "type": "wireguard",
-      "tag": "wg-ep",
-      "system": false,
-      "mtu": 1280,
-      "address": ["10.0.0.5/32"],
-      "private_key": "REPLACE_WITH_YOUR_PRIVATE_KEY",
-      "peers": [
-        {
-          "address": "8.209.203.17",
-          "port": 51820,
-          "public_key": "REPLACE_WITH_SERVER_PUBLIC_KEY",
-          "allowed_ips": ["0.0.0.0/0"],
-          "persistent_keepalive_interval": 25
-        }
-      ]
-    }
-  ],
   "inbounds": [
     {
       "type": "mixed",
@@ -51,6 +31,18 @@
     }
   ],
   "outbounds": [
+    {
+      "type": "wireguard",
+      "tag": "wg-out",
+      "local_address": ["10.0.0.5/32"],
+      "private_key": "REPLACE_WITH_YOUR_PRIVATE_KEY",
+      "peer_public_key": "REPLACE_WITH_SERVER_PUBLIC_KEY",
+      "server": "8.209.203.17",
+      "server_port": 1194,
+      "mtu": 1280,
+      "system": false,
+      "reserved": [0, 0, 0]
+    },
     { "type": "direct", "tag": "direct" }
   ],
   "route": {
@@ -65,15 +57,14 @@
     ],
     "rules": [
       { "ip_is_private": true, "outbound": "direct" },
-      { "rule_set": "geosite-google", "outbound": "wg-ep" },
-      { "rule_set": "geosite-github", "outbound": "wg-ep" },
-      { "rule_set": "geosite-openai", "outbound": "wg-ep" },
-      { "rule_set": "geosite-anthropic", "outbound": "wg-ep" },
-      { "rule_set": "geosite-docker", "outbound": "wg-ep" },
-      { "domain": [ "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "crates.io", "static.crates.io", "proxy.golang.org", "go.dev", "repo.maven.apache.org", "search.maven.org", "maven.apache.org" ], "outbound": "wg-ep" },
+      { "rule_set": "geosite-google", "outbound": "wg-out" },
+      { "rule_set": "geosite-github", "outbound": "wg-out" },
+      { "rule_set": "geosite-openai", "outbound": "wg-out" },
+      { "rule_set": "geosite-anthropic", "outbound": "wg-out" },
+      { "rule_set": "geosite-docker", "outbound": "wg-out" },
+      { "domain": [ "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "crates.io", "static.crates.io", "proxy.golang.org", "go.dev", "repo.maven.apache.org", "search.maven.org", "maven.apache.org" ], "outbound": "wg-out" },
       { "rule_set": [ "geoip-cn", "geosite-cn" ], "outbound": "direct" }
     ],
-    "final": "wg-ep",
-    "default_domain_resolver": "dns-direct"
+    "final": "wg-out"
   }
 }

@@ -117,8 +117,8 @@ gnp-client register ningsure
      - 用 safe-template.json 结构
      - 填入: private_key, address (wg_ip), public_key (server), server+port
      - mixed 模式 (socks5+http 0.0.0.0:1080)
-  7. 下载 sing-box v1.13.16
-  8. 安装 systemd --user service
+  7. 下载 sing-box v1.12.3
+  8. 安装 systemd 系统服务 (/etc/systemd/system/gnp-proxy.service)
   9. 提示:
      ═══════════════════════════════════════════
      ⚠️  最后一步: 在 lwtop 上执行激活!
@@ -266,7 +266,7 @@ gnp-client register ningsure
 # [INFO] 选中 peer: ningsure (10.0.0.15/32)
 # [INFO] 标记已使用...
 # [INFO] 生成配置: ~/.local/share/sing-box/config.json
-# [INFO] 安装 sing-box v1.13.16...
+#[INFO] 安装 sing-box v1.12.3...
 # [INFO] 安装 systemd service...
 # ═══════════════════════════════════════════
 # ⚠️  最后一步: 在 lwtop 上执行激活!

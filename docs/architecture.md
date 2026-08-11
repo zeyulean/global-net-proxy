@@ -33,19 +33,19 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 ```
   客户端 (Mac / Ubuntu / Windows)
   ┌──────────────────────────────┐         wg 隧道          ┌────────────────────────┐
-  │  sing-box                     │  UDP 51820 (加密)        │  lwtop (8.209.203.17)  │
+  │  sing-box                     │  UDP 1194 (加密)         │  lwtop (8.209.203.17)  │
   │  ├─ mixed-in (0.0.0.0:1080)  │◀────────────────────────▶│  wg server (wg-quick)   │
   │  │   socks5 + http 代理       │                          │  ├─ NAT/SNAT 转发        │
   │  ├─ DNS 分流                  │                          │  └─ 出口: 海外公网       │
   │  │   国内→223.5.5.5 直连      │                          └────────────────────────┘
-  │  │   国外→1.1.1.1 走wg        │
-  │  ├─ wg endpoint (wg-ep)       │
+  │  │   国外→1.1.1.1 UDP 走wg      │
+  │  ├─ wg outbound (wg-out)       │
   │  │   system:false (userspace) │
   │  └─ route 规则                │
   │       ip_is_private → direct  │
-  │       geosite 国外 → wg-ep    │
+  │       geosite 国外 → wg-out   │
   │       geosite-cn → direct     │
-  │       final → wg-ep           │
+  │       final → wg-out          │
   └──────────────────────────────┘
 ```
 
@@ -56,49 +56,53 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 | github/google/openai/pypi/npm/crates/go/maven/docker 等 | geosite 命中 | wg → lwtop 海外 |
 | 国内域名/国内 IP | geosite-cn / geoip-cn 命中 | direct 直连 |
 | 私有 IP (10.x/172.16.x/192.168.x) | ip_is_private | direct 直连 |
-| 其余未知 | final=wg-ep | 走 wg |
+| 其余未知 | final=wg-out | 走 wg |
 
 ## 组件分工
 
 | 组件 | 端 | 作用 |
 |------|----|----|
 | `wg-quick` (原生 wireguard-tools) | **server** (lwtop) | wg server + NAT 转发 |
-| `sing-box` (二进制) | **client** | mixed 代理端口 + DNS 分流 + wg endpoint (userspace) + route 规则 |
+| `sing-box` (二进制) | **client** | mixed 代理端口 + DNS 分流 + wg outbound (userspace) + route 规则 |
 | geosite/geoip 规则集 | client | 判断国内外域名的依据，remote rule-set 自动更新 |
 | `gnp-client` (Rust CLI) | **client** | 管理 sing-box (start/stop/status/wg/config/test) |
 | `gnp-server` (Rust CLI) | **server** | 管理 wg server (install/peers/add-peer/pregen/activate) |
 
-## sing-box 配置要点 (1.12+)
+## sing-box 配置要点 (1.12)
 
-> **重要**: sing-box 1.11→1.12 有破坏性变更，以下格式要求适用于 1.12+（当前 1.13.16）
+> **重要**: sing-box 1.13 的 endpoint wireguard 有 bug（握手不完成），降级到 **1.12.3** 使用 outbound wireguard 格式。
+> 需要环境变量 `ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`。
 
-1. **WireGuard endpoint**（不是 outbound）：
-   - 用 `endpoints` 数组，`type: "wireguard"`
-   - peer 用 `address` + `port` 字段（不是旧 `server` + `server_port`）
+1. **WireGuard outbound**（不是 endpoint）：
+   - 用 `outbounds` 数组，`type: "wireguard"`
+   - peer 用 `server` + `server_port` 字段
    - `system: false` 使用 userspace wireguard（不需要内核模块，不需要 root）
+   - 需要环境变量 `ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`
 
-2. **DNS server**（新格式）：
-   - 用 `type: "https"` 或 `type: "udp"` + `server` 字段
-   - **不是**旧 `address` 字段
+2. **DNS server**（1.12 格式）：
+   - 用 `address` 字段（不是 1.13 的 `type` + `server`）
+   - 国外域名经 wg 走 `1.1.1.1` UDP（非 DoH）
+   - 国内域名走 `223.5.5.5` 直连
 
-3. **ruleset download_detour 用 direct**：
-   - 如果用 `wg-ep` 下载 ruleset，存在鸡蛋问题（wg 需要解析域名→需要 DNS→DNS 可能依赖 wg）
-   - 用 `direct` 直连下载，避免循环依赖
-
-4. **mixed inbound**：
+3. **mixed inbound**：
    - `type: "mixed"` 同时支持 socks5 和 http 代理
    - `listen: "0.0.0.0"` 允许局域网设备使用
    - `listen_port: 1080`
 
-5. **route.final = wg-ep**（非 direct）：
+4. **route.final = wg-out**（非 direct）：
    - 未匹配的域名默认走代理（安全默认值，访问国外不会被墙）
+
+5. **systemd service**：
+   - 系统级 `/etc/systemd/system/gnp-proxy.service`
+   - 必须包含 `Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`
 
 ## 网络细节
 
 - wg 隧道网段：`10.0.0.0/24`（server=`10.0.0.1/24`，客户端从 `.2` 递增）
-- wg 端口：`51820`（UDP）
+- wg 端口：`1194`（UDP，阿里云安全组放行）
 - 代理端口：`1080`（mixed: socks5 + http）
-- DNS：国内 `223.5.5.5`（阿里 UDP），国外 `https://1.1.1.1`（Cloudflare DoH，走 wg）
+- sing-box 版本：`1.12.3`（1.13 endpoint wireguard 有 bug，降级使用 outbound 格式）
+- DNS：国内 `223.5.5.5`（阿里 UDP 直连），国外 `1.1.1.1` UDP（Cloudflare，走 wg）
 - MTU：1280（wg 隧道，避免分片）
 
 ## 目录结构
@@ -120,7 +124,7 @@ global-net-proxy/
 │       ├── cleanup-aipro.sh    # (应急) aipro 事故清理兜底
 │       └── recover-aipro-network.sh  # (应急) 断网恢复兜底
 ├── config/
-│   └── safe-template.json  # 安全配置模板 (mixed + wg endpoint)
+│   └── safe-template.json  # 安全配置模板 (mixed + wg outbound 1.12 格式)
 ├── docs/
 │   ├── architecture.md     # 本文档
 │   ├── setup.md            # 各端安装指南

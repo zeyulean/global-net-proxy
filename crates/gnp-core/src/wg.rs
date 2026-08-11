@@ -57,7 +57,7 @@ pub fn test_proxy(proxy: &str, url: &str, timeout_s: u64) -> Result<(String, u64
 }
 
 /// 检查本机 wg 端口 (server 端, 内核 wg0)
-/// 返回 true 如果 wg0 存在且监听 51820
+/// 返回 true 如果 wg0 存在且监听 1194
 pub fn server_wg_active() -> bool {
     let out = Command::new("wg")
         .args(["show", "wg0"])

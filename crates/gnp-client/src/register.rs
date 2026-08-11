@@ -16,7 +16,7 @@ const GITEE_BRANCH: &str = "main";
 
 /// lwtop server 配置 (公钥可公开)
 const SERVER_HOST: &str = "8.209.203.17";
-const SERVER_PORT: u16 = 51820;
+const SERVER_PORT: u16 = 1194;
 const SERVER_PUBKEY: &str = "M/t3YYwIW7Xou+vASGtNoAHHNrh82ROzYDU4LIsLz18=";
 
 /// peer 池 JSON 结构
@@ -189,7 +189,11 @@ fn verify_server_pubkey(repo: &Path) {
     }
 }
 
-/// 生成 config (mixed 模式, 安全)
+/// 生成 config (mixed 模式, sing-box 1.12 outbound wireguard 格式, 安全)
+///
+/// 使用 outbound wireguard (1.12 旧格式), 需配合环境变量
+/// ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true 使用。
+/// DNS: 国外域名经 wg 走 1.1.1.1 UDP (非 DoH), 用 socks5h 远程解析。
 fn generate_conf(peer: &Peer) -> Result<()> {
     let sb_dir = gnp_core::platform::sb_dir();
     let rules_dir = gnp_core::platform::sb_rules_dir();
@@ -203,8 +207,8 @@ fn generate_conf(peer: &Peer) -> Result<()> {
         "log": { "level": "info", "timestamp": true },
         "dns": {
             "servers": [
-                { "tag": "dns-proxy", "type": "https", "server": "1.1.1.1", "detour": "wg-ep" },
-                { "tag": "dns-direct", "type": "udp", "server": "223.5.5.5" }
+                { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
+                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "wg-out" }
             ],
             "rules": [
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
@@ -212,28 +216,27 @@ fn generate_conf(peer: &Peer) -> Result<()> {
             "final": "dns-proxy",
             "strategy": "prefer_ipv4"
         },
-        "endpoints": [{
-            "type": "wireguard",
-            "tag": "wg-ep",
-            "system": false,
-            "mtu": 1280,
-            "address": [wg_ip],
-            "private_key": privkey,
-            "peers": [{
-                "address": SERVER_HOST,
-                "port": SERVER_PORT,
-                "public_key": SERVER_PUBKEY,
-                "allowed_ips": ["0.0.0.0/0"],
-                "persistent_keepalive_interval": 25
-            }]
-        }],
         "inbounds": [{
             "type": "mixed",
             "tag": "mixed-in",
-            "listen": "127.0.0.1",
+            "listen": "0.0.0.0",
             "listen_port": 1080
         }],
-        "outbounds": [{ "type": "direct", "tag": "direct" }],
+        "outbounds": [
+            {
+                "type": "wireguard",
+                "tag": "wg-out",
+                "local_address": [wg_ip],
+                "private_key": privkey,
+                "peer_public_key": SERVER_PUBKEY,
+                "server": SERVER_HOST,
+                "server_port": SERVER_PORT,
+                "mtu": 1280,
+                "system": false,
+                "reserved": [0, 0, 0]
+            },
+            { "type": "direct", "tag": "direct" }
+        ],
         "route": {
             "rule_set": [
                 { "type": "local", "tag": "geosite-cn", "format": "binary", "path": rules_dir.join("geosite-cn.srs").to_str().unwrap() },
@@ -243,8 +246,7 @@ fn generate_conf(peer: &Peer) -> Result<()> {
                 { "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" },
                 { "ip_is_private": true, "outbound": "direct" }
             ],
-            "final": "wg-ep",
-            "default_domain_resolver": "dns-direct"
+            "final": "wg-out"
         }
     });
 
@@ -323,6 +325,11 @@ pub fn run(args: &RegisterArgs) -> Result<()> {
 
     // 下载规则集
     gnp_core::install::install_rules()?;
+
+    // Linux: 安装 systemd 用户服务 (开机自启, 无需 root)
+    if gnp_core::platform::Platform::detect() == gnp_core::platform::Platform::Linux {
+        gnp_core::service::install_linux()?;
+    }
 
     // 验证配置
     println!("\n验证 sing-box 配置...");

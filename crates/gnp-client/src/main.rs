@@ -82,8 +82,8 @@ enum Commands {
         /// 本机 wg IP (如 10.0.0.5/32)
         #[arg(long)]
         client_ip: String,
-        /// wg 端口 (默认 51820)
-        #[arg(long, default_value_t = 51820)]
+        /// wg 端口 (默认 1194)
+        #[arg(long, default_value_t = 1194)]
         wg_port: u16,
         /// 只下载 sing-box (不生成配置)
         #[arg(long)]
@@ -213,6 +213,11 @@ fn cmd_install(
     } else {
         println!("✅ 只安装了二进制 (--bin-only), 未生成配置");
     }
+
+    // 4. Linux: 安装 systemd 用户服务 (开机自启, 无需 root)
+    if platform == platform::Platform::Linux {
+        service::install_linux()?;
+    }
     Ok(())
 }
 
@@ -340,7 +345,7 @@ fn cmd_wg() -> Result<()> {
         if let Some(wg) = config::extract_wg_endpoint(&v) {
             println!("\n📋 隧道配置:");
             println!("  本机 wg IP: {}", wg.address);
-            println!("  远端 server: {}:51820", wg.peer_address);
+            println!("  远端 server: {}:{}", wg.peer_address, wg.peer_port);
             println!("  MTU: {}", wg.mtu);
             println!(
                 "  密钥: 已配置 ({} 字符)",

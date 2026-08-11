@@ -55,7 +55,11 @@ pub fn launchd_plist_content() -> String {
     )
 }
 
-/// 生成 systemd service 内容 (Linux 开机自启)
+/// 生成 systemd 单元内容 (Linux 开机自启, 系统级)
+///
+/// 使用系统级 systemd (/etc/systemd/system/), 需 root 安装但更可靠。
+/// 包含 Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true,
+/// 因为 sing-box 1.12 的 outbound wireguard 需要 此环境变量。
 pub fn systemd_unit_content() -> String {
     format!(
         r#"[Unit]
@@ -65,6 +69,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
 ExecStart={bin} run -c {conf}
 Restart=on-failure
 RestartSec=10
@@ -77,6 +82,44 @@ WantedBy=multi-user.target
         bin = sb_bin().display(),
         conf = sb_config().display(),
     )
+}
+
+/// Linux systemd 系统级服务单元路径 (/etc/systemd/system/gnp-proxy.service)
+///
+/// 用系统级 (systemctl, 不加 --user), 更可靠。
+/// install 时需要 root (写 /etc/systemd/system/), 但 start/stop 用 pkexec/sudo 或 root。
+pub fn systemd_system_unit_path() -> PathBuf {
+    PathBuf::from("/etc/systemd/system").join(format!("{}.service", SYSTEMD_SERVICE))
+}
+
+/// 安装 Linux systemd 系统服务: 写 unit 文件 + daemon-reload + enable
+///
+/// 需要 root 权限 (写 /etc/systemd/system/)。
+pub fn install_linux() -> Result<()> {
+    let path = systemd_system_unit_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建 systemd 目录失败: {} (需要 root)", parent.display()))?;
+    }
+    std::fs::write(&path, systemd_unit_content())
+        .with_context(|| format!("写入 systemd 单元失败: {} (需要 root)", path.display()))?;
+
+    // 重新加载 systemd 守护进程
+    let _ = Command::new("systemctl")
+        .args(["daemon-reload"])
+        .status();
+    // 设为开机自启
+    let _ = Command::new("systemctl")
+        .args(["enable", SYSTEMD_SERVICE])
+        .status();
+
+    println!(
+        "✅ Linux systemd 系统服务已安装: {}",
+        path.display()
+    );
+    println!("   启动: sudo systemctl start {}", SYSTEMD_SERVICE);
+    println!("   状态: sudo systemctl status {}", SYSTEMD_SERVICE);
+    Ok(())
 }
 
 /// 启动 sing-box
@@ -148,6 +191,10 @@ fn is_running_macos() -> Result<bool> {
 // --- Linux (systemd) ---
 
 fn start_linux() -> Result<()> {
+    // 确保 systemd 系统服务已安装 (未安装则自动创建, 修复全新部署 install+start 失败)
+    if !systemd_system_unit_path().exists() {
+        install_linux()?;
+    }
     let st = Command::new("systemctl")
         .args(["start", SYSTEMD_SERVICE])
         .status()
@@ -159,7 +206,9 @@ fn start_linux() -> Result<()> {
 }
 
 fn stop_linux() -> Result<()> {
-    let _ = Command::new("systemctl").args(["stop", SYSTEMD_SERVICE]).status();
+    let _ = Command::new("systemctl")
+        .args(["stop", SYSTEMD_SERVICE])
+        .status();
     Ok(())
 }
 

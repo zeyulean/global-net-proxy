@@ -7,7 +7,7 @@
 ## 架构回顾
 
 - **server**（lwtop / 任意 Ubuntu 海外节点）：原生 WireGuard，`wg-quick` 管理
-- **client**（Mac / Ubuntu / Windows）：sing-box 二进制，**mixed 代理** + wg endpoint + DNS 分流
+- **client**（Mac / Ubuntu / Windows）：sing-box 二进制，**mixed 代理** + wg outbound + DNS 分流
 
 > 推荐使用 **Rust CLI** (`gnp-client` / `gnp-server`) 管理，bash 脚本作为参考/应急保留。
 
@@ -65,7 +65,7 @@ sudo gnp-server add-peer win-01
 - 私钥 `private_key`
 - 地址 `address`（如 10.0.0.5/32）
 - server 公钥 `server_public_key`
-- server 地址 `8.209.203.17:51820`
+- server 地址 `8.209.203.17:1194`
 
 > ⚠️ 这些参数要安全传给对应客户端，私钥不外泄。
 
@@ -100,15 +100,17 @@ gnp-client register ningsure
 
 ### systemd 常驻（Linux）
 
-`gnp-client start` 会自动生成 `~/.config/systemd/user/sing-box-gnp.service`：
-- **User**: 当前用户（非 root）
+`gnp-client install` 会自动生成系统级服务 `/etc/systemd/system/gnp-proxy.service`（需 sudo）：
+
+- **系统级**：`/etc/systemd/system/gnp-proxy.service`
+- **Environment**: `ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`（sing-box 1.12 outbound wireguard 需要）
 - **Restart**: `on-failure`（非 always）
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now sing-box-gnp
-systemctl --user status sing-box-gnp
-journalctl --user -u sing-box-gnp -f
+sudo systemctl daemon-reload
+sudo systemctl enable --now gnp-proxy
+sudo systemctl status gnp-proxy
+sudo journalctl -u gnp-proxy -f
 ```
 
 ---
@@ -157,9 +159,10 @@ proxy_off() {
 ## 平台差异说明
 
 ### Linux (Ubuntu/Debian)
-- **不需要 root**（mixed 模式不建 tun）
+- **systemd 服务安装需要 sudo**（写 /etc/systemd/system/）
+- mixed 模式本身不需要 root（不建 tun），但系统级服务更可靠
 - 依赖：`curl`, `tar`
-- systemd --user 服务常驻
+- systemd 系统服务常驻 (`/etc/systemd/system/gnp-proxy.service`)
 
 ### macOS
 - **不需要 root**
@@ -197,13 +200,13 @@ gnp-client status
 sing-box 未启动或端口不对。确认 `gnp-client status` 显示运行中，端口是 1080。
 
 **Q: DNS 解析延迟高？**
-国外域名走 `https://1.1.1.1`（经 wg），首次解析较慢但会缓存。
+国外域名走 `1.1.1.1` UDP（经 wg），比 DoH 快，但首次解析仍需经隧道。
 
 **Q: 某域名没走代理？**
 geosite 分类覆盖大部分，但小众域名可能没有。可临时在 route 规则加精确 `domain` 匹配。或直接用 `export https_proxy=http://127.0.0.1:1080` 强制走代理。
 
 **Q: 想让所有流量默认走代理？**
-当前 `final: "wg-ep"` 已经是默认走代理。未命中任何规则的域名会走 wg。
+当前 `final: "wg-out"` 已经是默认走代理。未命中任何规则的域名会走 wg。
 
 ---
 
