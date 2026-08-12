@@ -2,7 +2,7 @@
 
 ## 一句话
 
-国内外网络分流：**国外流量（github/google/代码源/AI）通过 mixed 代理端口走 WireGuard 隧道经 lwtop 海外出口，国内流量直连**。
+国内外网络分流：**国外流量（github/google/代码源/AI）通过 mixed 代理端口走 Hysteria2 (QUIC) 隧道经 lwtop 海外出口，国内流量直连**。
 
 ## ⚠️ 安全原则
 
@@ -32,20 +32,20 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 
 ```
   客户端 (Mac / Ubuntu / Windows)
-  ┌──────────────────────────────┐         wg 隧道          ┌────────────────────────┐
-  │  sing-box                     │  UDP 1194 (加密)         │  lwtop (8.209.203.17)  │
-  │  ├─ mixed-in (0.0.0.0:1080)  │◀────────────────────────▶│  wg server (wg-quick)   │
-  │  │   socks5 + http 代理       │                          │  ├─ NAT/SNAT 转发        │
-  │  ├─ DNS 分流                  │                          │  └─ 出口: 海外公网       │
+  ┌──────────────────────────────┐   hysteria2 QUIC 隧道   ┌────────────────────────┐
+  │  sing-box                     │  UDP 443 (QUIC/TLS 1.3) │  lwtop (8.209.203.17)  │
+  │  ├─ mixed-in (0.0.0.0:1080)  │◀───────────────────────▶│  hy2-in (gnp-hy2)      │
+  │  │   socks5 + http 代理       │                          │  ├─ NAT 转发           │
+  │  ├─ DNS 分流                  │                          │  └─ 出口: 海外公网     │
   │  │   国内→223.5.5.5 直连      │                          └────────────────────────┘
-  │  │   国外→1.1.1.1 UDP 走wg      │
-  │  ├─ wg outbound (wg-out)       │
-  │  │   system:false (userspace) │
+  │  │   国外→1.1.1.1 TCP 走 hy2  │
+  │  ├─ hy2 outbound (hy2-out)    │
+  │  │   password 认证 + TLS      │
   │  └─ route 规则                │
   │       ip_is_private → direct  │
-  │       geosite 国外 → wg-out   │
+  │       geosite 国外 → hy2-out  │
   │       geosite-cn → direct     │
-  │       final → wg-out          │
+  │       final → hy2-out         │
   └──────────────────────────────┘
 ```
 
@@ -53,57 +53,83 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 
 | 流量 | 判定规则 | 出口 |
 |------|---------|------|
-| github/google/openai/pypi/npm/crates/go/maven/docker 等 | geosite 命中 | wg → lwtop 海外 |
+| github/google/openai/pypi/npm/crates/go/maven/docker 等 | geosite 命中 | hy2 → lwtop 海外 |
 | 国内域名/国内 IP | geosite-cn / geoip-cn 命中 | direct 直连 |
 | 私有 IP (10.x/172.16.x/192.168.x) | ip_is_private | direct 直连 |
-| 其余未知 | final=wg-out | 走 wg |
+| 其余未知 | final=hy2-out | 走 hy2 |
 
 ## 组件分工
 
 | 组件 | 端 | 作用 |
 |------|----|----|
-| `wg-quick` (原生 wireguard-tools) | **server** (lwtop) | wg server + NAT 转发 |
-| `sing-box` (二进制) | **client** | mixed 代理端口 + DNS 分流 + wg outbound (userspace) + route 规则 |
+| `gnp-hy2` (sing-box systemd 服务) | **server** (lwtop) | hysteria2 入站 + 密码认证 + NAT 转发 |
+| `sing-box` (二进制, with_quic) | **client** | mixed 代理端口 + DNS 分流 + hy2 outbound + route 规则 |
 | geosite/geoip 规则集 | client | 判断国内外域名的依据，remote rule-set 自动更新 |
 | `gnp-client` (Rust CLI) | **client** | 管理 sing-box (start/stop/status/wg/config/test) |
-| `gnp-server` (Rust CLI) | **server** | 管理 wg server (install/peers/add-peer/pregen/activate) |
+| `gnp-server` (Rust CLI) | **server** | 管理 hy2 server (install/users/add-user/pregen/activate) |
 
-## sing-box 配置要点 (1.12)
+## Server 部署要点 (gnp-hy2)
 
-> **重要**: sing-box 1.13 的 endpoint wireguard 有 bug（握手不完成），降级到 **1.12.3** 使用 outbound wireguard 格式。
-> 需要环境变量 `ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`。
+- **配置**：`/opt/gnp-quic/config.json`（sing-box hysteria2 inbound）
+- **服务**：`/opt/gnp-quic/sing-box` 二进制 + systemd 服务 `gnp-hy2`
+- **自签证书**：`/opt/gnp-quic/certs/server.crt` / `server.key`（openssl 生成，10 年有效期）
+- **端口**：`443`（UDP/QUIC），阿里云安全组放行 UDP 443
+- **认证**：`users` 数组存放密码（`gnp-server add-user` / `pregen` / `activate` 管理）
+- **用户池**：`/opt/gnp-quic/pending-users/*.json`（预生成的密码包）
 
-1. **WireGuard outbound**（不是 endpoint）：
-   - 用 `outbounds` 数组，`type: "wireguard"`
-   - peer 用 `server` + `server_port` 字段
-   - `system: false` 使用 userspace wireguard（不需要内核模块，不需要 root）
-   - 需要环境变量 `ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`
+server 配置片段：
 
-2. **DNS server**（1.12 格式）：
-   - 用 `address` 字段（不是 1.13 的 `type` + `server`）
-   - 国外域名经 wg 走 `1.1.1.1` UDP（非 DoH）
-   - 国内域名走 `223.5.5.5` 直连
+```json
+{
+  "inbounds": [{
+    "type": "hysteria2",
+    "tag": "hy2-in",
+    "listen": "::",
+    "listen_port": 443,
+    "users": [ { "password": "<HY2_PASSWORD>" } ],
+    "tls": {
+      "enabled": true,
+      "certificate_path": "/opt/gnp-quic/certs/server.crt",
+      "key_path": "/opt/gnp-quic/certs/server.key"
+    }
+  }]
+}
+```
+
+## 客户端配置要点 (hysteria2 outbound)
+
+sing-box **1.13.16**（with_quic 构建，原生支持 hysteria2 outbound）。
+
+1. **hysteria2 outbound**：
+   - 用 `outbounds` 数组，`type: "hysteria2"`
+   - 认证用 `password` 字段（无需公钥对）
+   - `tls: { enabled: true, insecure: true }`（信任自签证书）
+   - `server_port: 443`（QUIC/UDP）
+
+2. **DNS server**：
+   - 国外域名经 hy2 走 `1.1.1.1` TCP（`detour: hy2-out`）
+   - 国内域名走 `223.5.5.5` 直连（`detour: direct`）
 
 3. **mixed inbound**：
    - `type: "mixed"` 同时支持 socks5 和 http 代理
    - `listen: "0.0.0.0"` 允许局域网设备使用
    - `listen_port: 1080`
 
-4. **route.final = wg-out**（非 direct）：
+4. **route.final = hy2-out**（非 direct）：
    - 未匹配的域名默认走代理（安全默认值，访问国外不会被墙）
 
 5. **systemd service**：
    - 系统级 `/etc/systemd/system/gnp-proxy.service`
-   - 必须包含 `Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true`
 
 ## 网络细节
 
-- wg 隧道网段：`10.0.0.0/24`（server=`10.0.0.1/24`，客户端从 `.2` 递增）
-- wg 端口：`1194`（UDP，阿里云安全组放行）
+- 隧道协议：`hysteria2`（QUIC over UDP 443，TLS 1.3 加密）
+- server 端口：`443`（UDP，阿里云安全组放行）
 - 代理端口：`1080`（mixed: socks5 + http）
-- sing-box 版本：`1.12.3`（1.13 endpoint wireguard 有 bug，降级使用 outbound 格式）
-- DNS：国内 `223.5.5.5`（阿里 UDP 直连），国外 `1.1.1.1` UDP（Cloudflare，走 wg）
-- MTU：1280（wg 隧道，避免分片）
+- sing-box 版本：`1.13.16`（with_quic，原生 hysteria2 outbound）
+- 认证：Hysteria2 密码（`HY2_PASSWORD`）
+- DNS：国内 `223.5.5.5`（阿里 UDP 直连），国外 `1.1.1.1` TCP（Cloudflare，走 hy2）
+- 无 MTU 调整需求（QUIC 自适应分片，无需 wg 的 1280 MTU）
 
 ## 目录结构
 
@@ -111,9 +137,9 @@ mixed 模式只监听 `0.0.0.0:1080`（同时支持 socks5 和 http 代理），
 global-net-proxy/
 ├── Cargo.toml              # Cargo workspace 根
 ├── crates/
-│   ├── gnp-core/           # 共享库: 平台/config/wg 诊断/服务管理
-│   ├── gnp-client/         # client CLI (install/start/stop/status/wg/config/test/register/update-rules/cleanup/recover)
-│   └── gnp-server/         # server CLI (install/uninstall/status/peers/add-peer/pregen/activate)
+│   ├── gnp-core/           # 共享库: 平台/config/hy2 诊断/服务管理
+│   ├── gnp-client/         # client CLI (install/start/stop/status/wg/config/test/register/update-rules/cleanup/recover/proxy)
+│   └── gnp-server/         # server CLI (install/uninstall/status/users/add-user/pregen/activate)
 ├── vendor/
 │   └── sing-box/           # submodule: sing-box 源码
 ├── bin/                    # 构建产物 (gitignore)
@@ -124,15 +150,15 @@ global-net-proxy/
 │       ├── cleanup-aipro.sh    # (应急) aipro 事故清理兜底
 │       └── recover-aipro-network.sh  # (应急) 断网恢复兜底
 ├── config/
-│   └── safe-template.json  # 安全配置模板 (mixed + wg outbound 1.12 格式)
+│   └── safe-template.json  # 安全配置模板 (mixed + hysteria2 outbound 格式)
 ├── docs/
 │   ├── architecture.md     # 本文档
 │   ├── setup.md            # 各端安装指南
 │   ├── auto-registration.md# 自动注册方案
 │   └── incident-2026-08-10.md # aipro 断网事故记录
 └── peers/
-    └── SERVER_PUBKEY       # server 公钥 (可公开)
-    # slot-*.json           # peer 池 (含私钥), 只存 gitee 私有仓库, 不进公开 repo
+    └── HY2_PASSWORD        # server 密码校验值 (可公开)
+    # slot-*.json           # 用户池 (含密码), 只存 gitee 私有仓库, 不进公开 repo
 ```
 
 > `bash/` 仅保留应急兜底脚本（断网时 Rust 二进制无法运行）。正式管理使用 Rust CLI (`gnp-client` / `gnp-server`)。
