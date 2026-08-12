@@ -1,0 +1,121 @@
+{
+  "log": {
+    "level": "debug",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "dns-direct",
+        "type": "udp",
+        "server": "223.5.5.5"
+      },
+      {
+        "tag": "dns-remote",
+        "type": "tcp",
+        "server": "1.1.1.1",
+        "detour": "wg-out"
+      },
+      {
+        "tag": "dns-hosts",
+        "type": "hosts",
+        "path": [
+          "/etc/hosts"
+        ],
+        "predefined": {
+          "aipro.host": "192.168.1.2",
+          "lwtop.host": "8.209.203.17",
+          "mac.host": "127.0.0.1"
+        }
+      }
+    ],
+    "rules": [
+      {
+        "domain": [
+          "aipro.host",
+          "lwtop.host",
+          "mac.host"
+        ],
+        "server": "dns-hosts"
+      },
+      {
+        "rule_set": [
+          "geosite-cn",
+          "geoip-cn"
+        ],
+        "server": "dns-direct"
+      }
+    ],
+    "final": "dns-remote",
+    "strategy": "prefer_ipv4"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "wireguard",
+      "tag": "wg-out",
+      "server": "8.209.203.17",
+      "server_port": 1194,
+      "local_address": [
+        "10.0.0.4/32"
+      ],
+      "private_key": "UOgmyXaDYzBW+yk3OEH00Qn0g8mNRHfA3u7UkWeMu0o=",
+      "peer_public_key": "l3QrifHIMhWl/xizCC8b9xlJ/onJFboGECr8BV0Ong0=",
+      "mtu": 1280,
+      "reserved": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rule_set": [
+      {
+        "type": "local",
+        "tag": "geosite-cn",
+        "format": "binary",
+        "path": "/Users/lwboy/.local/share/sing-box/rules/geosite-cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geoip-cn",
+        "format": "binary",
+        "path": "/Users/lwboy/.local/share/sing-box/rules/geoip-cn.srs"
+      }
+    ],
+    "rules": [
+      {
+        "domain_suffix": [
+          "aipro.host",
+          "lwtop.host",
+          "mac.host"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "geosite-cn",
+          "geoip-cn"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ],
+    "final": "wg-out"
+  }
+}
