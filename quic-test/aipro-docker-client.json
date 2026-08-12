@@ -1,0 +1,16 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    { "type": "mixed", "tag": "mixed-in", "listen": "0.0.0.0", "listen_port": 1081 }
+  ],
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-out",
+      "server": "8.209.203.17",
+      "server_port": 443,
+      "password": "gnp-quic-test-password",
+      "tls": { "enabled": true, "insecure": true }
+    }
+  ]
+}

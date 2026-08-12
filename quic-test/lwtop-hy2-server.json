@@ -1,0 +1,20 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [ { "password": "gnp-quic-test-password" } ],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/opt/gnp-quic/certs/server.crt",
+        "key_path": "/opt/gnp-quic/certs/server.key"
+      }
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ]
+}
