@@ -1,15 +1,15 @@
 //! gnp-server — global-net-proxy server CLI
 //!
-//! 管理 WireGuard server (内核 wg0):
-//! - install:  安装 wg + 配置 + NAT
-//! - uninstall: 卸载 (停止服务/删配置/移除包)
-//! - status:   查看状态 (wg0/peers/握手)
-//! - peers:    列出所有客户端
-//! - add-peer: 添加客户端
-//! - pregen:   预生成 N 个 peer 配置包
-//! - activate: 激活预生成的 peer
+//! 管理 sing-box hysteria2 (QUIC) server:
+//! - install:   部署 sing-box + hysteria2 inbound + 自签证书 + systemd 服务
+//! - uninstall: 卸载 (停止服务/删配置/删证书)
+//! - status:    查看状态 (hy2 服务/443 端口)
+//! - users:     列出所有 hysteria2 用户
+//! - add-user:  添加用户 (生成密码)
+//! - pregen:    预生成 N 个用户密码包
+//! - activate:  激活预生成的用户
 //!
-//! 需要 root 权限 (wg set / iptables)。
+//! 需要 root 权限 (写 /opt/gnp-quic, 监听 443 需 root)。
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -18,33 +18,33 @@ use std::process::Command;
 
 use gnp_core::wg;
 
-/// global-net-proxy server — WireGuard server 管理
+/// global-net-proxy server — Hysteria2 (QUIC) server 管理
 ///
-/// 管理内核 wg0: 安装/状态/客户端管理/peer 池。
-/// 需要 root 权限 (wg set / iptables)。
+/// 管理 sing-box hysteria2 inbound: 安装/状态/用户管理/密码池。
+/// 需要 root 权限 (写 /opt/gnp-quic, 监听 443 UDP 需 root)。
 ///
 /// 快速开始:
-///   sudo gnp-server install            # 安装 + NAT + 开机自启
-///   sudo gnp-server add-peer macbook   # 添加客户端
+///   sudo gnp-server install            # 部署 sing-box + hysteria2 + systemd
+///   sudo gnp-server add-user  macbook  # 添加用户
 #[derive(Parser)]
 #[command(
     name = "gnp-server",
     version,
-    about = "global-net-proxy server (WireGuard)",
-    long_about = "管理 WireGuard server (内核 wg0)。需要 root 权限 (wg set / iptables)。\n\
+    about = "global-net-proxy server (Hysteria2/QUIC)",
+    long_about = "管理 sing-box hysteria2 (QUIC) server。需要 root 权限。\n\
         \n\
-        配置: /etc/wireguard/wg0.conf\n\
-        端口: 1194 (UDP)\n\
-        网段: 10.0.0.0/24\n\
-        pending-peers: /etc/wireguard/pending-peers/\n\
+        配置: /opt/gnp-quic/config.json\n\
+        证书: /opt/gnp-quic/certs/ (自签)\n\
+        端口: 443 (UDP, QUIC)\n\
+        pending-users: /opt/gnp-quic/pending-users/\n\
         \n\
         常用命令:\n\
         \n  \
-        sudo gnp-server install           安装 wg + NAT + 开机自启\n  \
-        sudo gnp-server status            查看 wg0 状态\n  \
-        sudo gnp-server add-peer <名称>   添加客户端\n  \
-        sudo gnp-server pregen <N>        预生成 peer 池\n  \
-        sudo gnp-server activate <id>     激活预生成的 peer\n\
+        sudo gnp-server install           部署 sing-box + hysteria2 + 开机自启\n  \
+        sudo gnp-server status            查看 hy2 服务状态\n  \
+        sudo gnp-server add-user <名称>   添加用户\n  \
+        sudo gnp-server pregen <N>        预生成用户密码池\n  \
+        sudo gnp-server activate <id>     激活预生成的用户\n\
         \n\
         详见: docs/usage.md"
 )]
@@ -55,63 +55,60 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 安装 WireGuard server (wg + NAT + 开机自启)
-    #[command(long_about = "安装 WireGuard server, 包括软件包、密钥、配置、NAT、开机自启。\n\n\
-        安装步骤:\n  \
-        1. apt install wireguard wireguard-tools\n  \
-        2. 生成 server 密钥 (wg genkey / wg pubkey)\n  \
-        3. 写 /etc/wireguard/wg0.conf (IP=10.0.0.1/24, Port=1194)\n  \
-        4. systemctl enable --now wg-quick@wg0\n  \
-        5. 配置 NAT (iptables MASQUERADE + ip_forward=1)\n\n\
-        注意: 需要在云服务商安全组放行 UDP 1194。\n\n\
+    /// 部署 Hysteria2 server (sing-box + 证书 + systemd)
+    #[command(long_about = "部署 sing-box hysteria2 (QUIC) server。\n\n\
+        部署步骤:\n  \
+        1. 下载 sing-box (with_quic) 到 /opt/gnp-quic/sing-box\n  \
+        2. 生成自签证书 (openssl req -x509)\n  \
+        3. 写 /opt/gnp-quic/config.json (hysteria2 inbound on UDP 443)\n  \
+        4. 写 systemd 服务 (gnp-hy2) + enable --now\n  \
+        5. 放行 UDP 443 (iptables)\n\n\
+        注意: 需要在云服务商安全组放行 UDP 443。\n\n\
         示例:\n  \
         sudo gnp-server install")]
     Install,
-    /// 卸载 WireGuard server
-    #[command(long_about = "完全卸载 WireGuard server。\n\n\
+    /// 卸载 Hysteria2 server
+    #[command(long_about = "完全卸载 hysteria2 server。\n\n\
         卸载内容:\n  \
-        1. 停止并禁用 wg-quick@wg0\n  \
-        2. 删除 /etc/wireguard/wg0.conf\n  \
-        3. 删除 server 密钥 (server.key / server.pub)\n  \
-        4. 删除 pending-peers 目录\n  \
-        5. 移除 wireguard-tools 包\n\n\
+        1. 停止并禁用 gnp-hy2 服务\n  \
+        2. 删除 /opt/gnp-quic 目录 (配置/证书/用户)\n\n\
         示例:\n  \
         sudo gnp-server uninstall")]
     Uninstall,
-    /// 查看状态 (wg0/peers/握手)
-    #[command(long_about = "查看 wg0 接口状态和 peer 信息。\n\n\
+    /// 查看状态 (hy2 服务/443 端口)
+    #[command(long_about = "查看 hysteria2 server 状态。\n\n\
         输出内容:\n  \
-        - wg0 是否激活\n  \
-        - wg show wg0 原始输出 (接口详情/peer 握手时间/传输量)\n\n\
+        - gnp-hy2 systemd 服务是否激活\n  \
+        - UDP 443 是否监听\n  \
+        - 服务详情 (进程/状态)\n\n\
         示例:\n  \
         sudo gnp-server status")]
     Status,
-    /// 列出所有已注册客户端
-    #[command(long_about = "列出所有已注册的客户端 peer 公钥。\n\n\
+    /// 列出所有已注册用户
+    #[command(long_about = "列出所有已注册的 hysteria2 用户密码。\n\n\
         示例:\n  \
-        sudo gnp-server peers")]
-    Peers,
-    /// 添加一个客户端 (生成配置)
-    #[command(long_about = "为新客户端生成密钥、分配 IP 并加入 wg0。\n\n\
+        sudo gnp-server users")]
+    Users,
+    /// 添加一个用户 (生成密码)
+    #[command(long_about = "为新用户生成 hysteria2 密码并加入 server 配置。\n\n\
         行为:\n  \
-        1. 生成客户端密钥对 (wg genkey / wg pubkey)\n  \
-        2. 分配客户端 IP (10.0.0.x)\n  \
-        3. wg set 加入 wg0 运行时\n  \
-        4. 持久化到 wg0.conf\n  \
-        5. 输出客户端配置 (含私钥, 注意安全传输)\n\n\
+        1. 生成随机密码\n  \
+        2. 加入 /opt/gnp-quic/config.json 的 users 列表\n  \
+        3. 重启 gnp-hy2 服务\n  \
+        4. 输出用户配置 (含密码, 注意安全传输)\n\n\
         示例:\n  \
-        sudo gnp-server add-peer macbook\n  \
-        sudo gnp-server add-peer aipro")]
-    AddPeer {
-        /// 客户端名称
+        sudo gnp-server add-user macbook\n  \
+        sudo gnp-server add-user aipro")]
+    AddUser {
+        /// 用户名称
         name: String,
     },
-    /// 预生成 N 个 peer 配置包 (不入 wg0)
-    #[command(long_about = "批量生成待用 peer 配置包, 不占运行时资源。\n\n\
+    /// 预生成 N 个用户密码包 (不加入 server)
+    #[command(long_about = "批量生成待用用户密码包, 不占运行时资源。\n\n\
         行为:\n  \
-        - 为每个 peer 生成密钥对和 IP\n  \
-        - 存为 JSON 到 /etc/wireguard/pending-peers/<id>.json\n  \
-        - JSON 包含: id, status=available, 密钥, IP, server 信息\n\n\
+        - 为每个用户生成随机密码\n  \
+        - 存为 JSON 到 /opt/gnp-quic/pending-users/<id>.json\n  \
+        - JSON 包含: id, status=available, password, server 信息\n\n\
         用途: 配合 gnp-client register 实现新机器自动注册。\n\
         将 peers/ 推送到 gitee 私有仓库后, 客户端可自动取用。\n\n\
         示例:\n  \
@@ -120,12 +117,12 @@ enum Commands {
         /// 数量
         count: u32,
     },
-    /// 激活一个预生成的 peer (加入 wg0)
-    #[command(long_about = "将 pending-peers 中的 peer 加入 wg0 运行时。\n\n\
+    /// 激活一个预生成的用户 (加入 server)
+    #[command(long_about = "将 pending-users 中的用户密码加入 server 配置。\n\n\
         行为:\n  \
-        1. 从 /etc/wireguard/pending-peers/<id>.json 读取配置\n  \
-        2. wg set 加入 wg0 运行时\n  \
-        3. 持久化到 wg0.conf\n  \
+        1. 从 /opt/gnp-quic/pending-users/<id>.json 读取配置\n  \
+        2. 加入 /opt/gnp-quic/config.json 的 users 列表\n  \
+        3. 重启 gnp-hy2 服务\n  \
         4. 更新 JSON 状态为 activated\n\n\
         重要: gnp-client register 完成后, 必须执行此命令,\n\
         否则客户端无法连通。\n\n\
@@ -138,12 +135,16 @@ enum Commands {
 }
 
 // 常量
-const WG_CONF: &str = "/etc/wireguard/wg0.conf";
-const WG_IFACE: &str = "wg0";
-const PENDING_DIR: &str = "/etc/wireguard/pending-peers";
-const WG_SUBNET: &str = "10.0.0.0/24";
-const SERVER_IP: &str = "10.0.0.1/24";
-const WG_PORT: &str = "1194";
+const HY2_DIR: &str = "/opt/gnp-quic";
+const HY2_CONF: &str = "/opt/gnp-quic/config.json";
+const PENDING_DIR: &str = "/opt/gnp-quic/pending-users";
+const CERTS_DIR: &str = "/opt/gnp-quic/certs";
+const CERT_CRT: &str = "/opt/gnp-quic/certs/server.crt";
+const CERT_KEY: &str = "/opt/gnp-quic/certs/server.key";
+const SYSTEMD_UNIT: &str = "/etc/systemd/system/gnp-hy2.service";
+const HY2_PORT: &str = "443";
+const SERVER_IP: &str = "8.209.203.17";
+const SB_BIN: &str = "/opt/gnp-quic/sing-box";
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -151,8 +152,8 @@ fn main() -> Result<()> {
         Commands::Install => cmd_install(),
         Commands::Uninstall => cmd_uninstall(),
         Commands::Status => cmd_status(),
-        Commands::Peers => cmd_peers(),
-        Commands::AddPeer { name } => cmd_add_peer(&name),
+        Commands::Users => cmd_users(),
+        Commands::AddUser { name } => cmd_add_user(&name),
         Commands::Pregen { count } => cmd_pregen(count),
         Commands::Activate { id } => cmd_activate(&id),
     }
@@ -176,100 +177,209 @@ fn libc_geteuid() -> u32 {
     }
 }
 
+/// 下载 sing-box 到 /opt/gnp-quic/
+fn install_singbox() -> Result<()> {
+    if std::path::Path::new(SB_BIN).exists() {
+        println!("✅ sing-box 已存在: {}", SB_BIN);
+        return Ok(());
+    }
+    println!("📦 下载 sing-box (with_quic)...");
+    std::fs::create_dir_all(HY2_DIR).context("创建 /opt/gnp-quic 失败")?;
+    let tmp = format!("{}/sb.tar.gz", HY2_DIR);
+    let url = "https://github.com/SagerNet/sing-box/releases/download/v1.13.16/sing-box-1.13.16-linux-amd64.tar.gz";
+    let st = Command::new("curl")
+        .args(["-fL", "--retry", "3", "-o"])
+        .arg(&tmp)
+        .arg(url)
+        .status()
+        .context("curl 下载 sing-box 失败")?;
+    if !st.success() {
+        bail!("下载 sing-box 失败");
+    }
+    let st = Command::new("tar")
+        .args(["-xzf", &tmp, "-C", HY2_DIR])
+        .status()
+        .context("解压 sing-box 失败")?;
+    if !st.success() {
+        bail!("解压 sing-box 失败");
+    }
+    // 找到二进制并改名
+    let found = find_sb_bin(std::path::Path::new(HY2_DIR))?;
+    std::fs::copy(&found, SB_BIN).context("复制 sing-box 失败")?;
+    let _ = std::fs::set_permissions(
+        SB_BIN,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    println!("✅ sing-box 安装完成: {}", SB_BIN);
+    Ok(())
+}
+
+/// 递归找 sing-box 二进制
+fn find_sb_bin(dir: &std::path::Path) -> Result<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            if let Ok(found) = find_sb_bin(&path) {
+                return Ok(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("sing-box") {
+            return Ok(path);
+        }
+    }
+    bail!("解压目录中找不到 sing-box 二进制")
+}
+
+/// 生成自签证书
+fn gen_cert() -> Result<()> {
+    std::fs::create_dir_all(CERTS_DIR).context("创建 certs 目录失败")?;
+    if std::path::Path::new(CERT_CRT).exists() && std::path::Path::new(CERT_KEY).exists() {
+        println!("✅ 证书已存在");
+        return Ok(());
+    }
+    println!("🔐 生成自签证书...");
+    let st = Command::new("openssl")
+        .args([
+            "req", "-x509", "-nodes", "-newkey", "rsa:2048",
+            "-keyout", CERT_KEY, "-out", CERT_CRT,
+            "-days", "3650", "-subj", "/CN=gnp-quic",
+        ])
+        .status()
+        .context("openssl 生成证书失败")?;
+    if !st.success() {
+        bail!("openssl 生成证书失败");
+    }
+    println!("✅ 证书已生成: {} / {}", CERT_CRT, CERT_KEY);
+    Ok(())
+}
+
+/// 生成 hysteria2 server config
+fn gen_server_config() -> Result<()> {
+    let config = serde_json::json!({
+        "log": { "level": "info", "timestamp": true },
+        "inbounds": [
+            {
+                "type": "hysteria2",
+                "tag": "hy2-in",
+                "listen": "::",
+                "listen_port": 443,
+                "users": [],
+                "tls": {
+                    "enabled": true,
+                    "certificate_path": CERT_CRT,
+                    "key_path": CERT_KEY
+                }
+            }
+        ],
+        "outbounds": [ { "type": "direct", "tag": "direct" } ]
+    });
+    // 若已有配置, 保留现有 users
+    if let Ok(content) = std::fs::read_to_string(HY2_CONF) {
+        if let Ok(existing) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(users) = existing.get("inbounds").and_then(|i| i.as_array())
+                .and_then(|arr| arr.first().and_then(|inb| inb.get("users")))
+            {
+                let mut config = config;
+                config["inbounds"][0]["users"] = users.clone();
+                let out = serde_json::to_string_pretty(&config)?;
+                std::fs::write(HY2_CONF, out)?;
+                println!("✅ 配置已更新: {}", HY2_CONF);
+                return Ok(());
+            }
+        }
+    }
+    let out = serde_json::to_string_pretty(&config)?;
+    std::fs::write(HY2_CONF, out).context("写 config.json 失败")?;
+    println!("✅ 配置已生成: {}", HY2_CONF);
+    Ok(())
+}
+
+/// 写 systemd 服务
+fn write_systemd_unit() -> Result<()> {
+    let unit = format!(
+        r#"[Unit]
+Description=GNP Hysteria2 QUIC Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={} run -c {}
+Restart=always
+RestartSec=3
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"#,
+        SB_BIN, HY2_CONF
+    );
+    std::fs::write(SYSTEMD_UNIT, unit).context("写 systemd 单元失败")?;
+    println!("✅ systemd 单元已写入: {}", SYSTEMD_UNIT);
+    Ok(())
+}
+
 /// 安装 server
 fn cmd_install() -> Result<()> {
     check_root()?;
-    println!("== 安装 WireGuard server ==");
+    println!("== 部署 Hysteria2 (QUIC) server ==");
 
-    // 1. 安装 wireguard
-    println!("📦 安装 wireguard...");
-    let st = Command::new("apt")
-        .args(["install", "-y", "wireguard", "wireguard-tools"])
-        .status()
-        .context("apt install 失败")?;
-    if !st.success() {
-        bail!("apt install wireguard 失败");
-    }
-
-    // 2. 生成 server 密钥
-    println!("🔑 生成密钥...");
-    let privkey = run_capture("wg", &["genkey"])?;
-    let pubkey = run_capture_with_input("wg", &["pubkey"], &privkey)?;
-    println!("  server 公钥: {}", pubkey.trim());
-
-    // 3. 写 wg0.conf
-    println!("📝 写入 {}", WG_CONF);
-    let conf = format!(
-        "[Interface]\nAddress = {}\nListenPort = {}\nPrivateKey = {}\n\n",
-        SERVER_IP, WG_PORT, privkey.trim()
-    );
-    std::fs::write(WG_CONF, conf).context("写 wg0.conf 失败")?;
-    std::fs::set_permissions(WG_CONF, std::os::unix::fs::PermissionsExt::from_mode(0o600))
-        .ok();
-
-    // 4. 启动 wg-quick
-    println!("🚀 启动 wg-quick@wg0...");
-    let _ = Command::new("systemctl").args(["enable", "wg-quick@wg0"]).status();
-    let _ = Command::new("systemctl").args(["restart", "wg-quick@wg0"]).status()
-        .or_else(|_| Command::new("wg-quick").args(["up", "wg0"]).status());
-
-    // 5. 配置 NAT
-    println!("🔥 配置 NAT...");
-    let iface = detect_wan_iface()?;
-    println!("  出口网卡: {}", iface);
+    // 1. 下载 sing-box
+    install_singbox()?;
+    // 2. 生成证书
+    gen_cert()?;
+    // 3. 写配置
+    gen_server_config()?;
+    // 4. 写 systemd
+    write_systemd_unit()?;
+    // 5. 启动服务
+    println!("🚀 启动 gnp-hy2 服务...");
+    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
+    let _ = Command::new("systemctl").args(["enable", "gnp-hy2"]).status();
+    let _ = Command::new("systemctl").args(["restart", "gnp-hy2"]).status();
+    // 6. 放行 UDP 443
+    println!("🔥 放行 UDP 443...");
     let _ = Command::new("iptables")
-        .args(["-t", "nat", "-A", "POSTROUTING", "-s", WG_SUBNET, "-o", &iface, "-j", "MASQUERADE"])
+        .args(["-I", "INPUT", "-p", "udp", "--dport", HY2_PORT, "-j", "ACCEPT"])
         .status();
-    let _ = Command::new("iptables")
-        .args(["-A", "FORWARD", "-i", "wg0", "-j", "ACCEPT"])
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("iptables-save > /etc/iptables/rules.v4 2>/dev/null")
         .status();
-    let _ = Command::new("iptables")
-        .args(["-A", "FORWARD", "-o", "wg0", "-j", "ACCEPT"])
-        .status();
-    // 持久化
-    let _ = Command::new("sh").arg("-c").arg("echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf").status();
-    let _ = Command::new("sysctl").args(["-p"]).status();
 
-    println!("\n✅ Server 安装完成!");
-    println!("  server IP: {}", SERVER_IP);
-    println!("  端口: {}", WG_PORT);
-    println!("  公钥: {}", pubkey.trim());
-    println!("  出口网卡: {}", iface);
-    println!("\n下一步: gnp-server add-peer <名称> 添加客户端");
+    println!("\n✅ Server 部署完成!");
+    println!("  server: {}:{} (UDP/QUIC)", SERVER_IP, HY2_PORT);
+    println!("  证书: {} / {}", CERT_CRT, CERT_KEY);
+    println!("  配置: {}", HY2_CONF);
+    println!("  服务: gnp-hy2 (systemd)");
+    println!("\n下一步: gnp-server add-user <名称> 添加用户");
     Ok(())
 }
 
 /// 卸载 server
 fn cmd_uninstall() -> Result<()> {
     check_root()?;
-    println!("== 卸载 WireGuard server ==");
+    println!("== 卸载 Hysteria2 server ==");
 
-    // 停止并禁用 wg0
-    println!("🛑 停止 wg-quick@wg0...");
-    let _ = Command::new("systemctl").args(["stop", "wg-quick@wg0"]).status();
-    let _ = Command::new("systemctl")
-        .args(["disable", "wg-quick@wg0"])
-        .status();
+    // 停止并禁用服务
+    println!("🛑 停止 gnp-hy2...");
+    let _ = Command::new("systemctl").args(["stop", "gnp-hy2"]).status();
+    let _ = Command::new("systemctl").args(["disable", "gnp-hy2"]).status();
 
-    // 删除配置/密钥/pending peers
-    println!("🗑️  删除配置和密钥...");
-    let wg_dir = "/etc/wireguard";
-    let _ = std::fs::remove_file(WG_CONF);
-    let _ = std::fs::remove_file(format!("{}/server.key", wg_dir));
-    let _ = std::fs::remove_file(format!("{}/server.pub", wg_dir));
-    let _ = std::fs::remove_dir_all(PENDING_DIR);
-
-    // 移除 wireguard-tools
-    println!("📦 移除 wireguard-tools...");
-    let _ = Command::new("apt")
-        .args(["remove", "-y", "-qq", "wireguard-tools"])
-        .status();
+    // 删除配置/证书/用户
+    println!("🗑️  删除 {} ...", HY2_DIR);
+    let _ = std::fs::remove_dir_all(HY2_DIR);
+    // 删除 systemd 单元
+    let _ = std::fs::remove_file(SYSTEMD_UNIT);
+    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
 
     println!("✅ 已卸载");
     Ok(())
 }
 
 /// 检测出口网卡
+#[allow(dead_code)]
 fn detect_wan_iface() -> Result<String> {
     let out = Command::new("sh")
         .arg("-c")
@@ -284,211 +394,183 @@ fn detect_wan_iface() -> Result<String> {
 
 /// 状态
 fn cmd_status() -> Result<()> {
-    println!("== gnp-server 状态 ==");
-    if !wg::server_wg_active() {
-        println!("❌ wg0 未激活 (运行 gnp-server install)");
+    println!("== gnp-server 状态 (Hysteria2/QUIC) ==");
+    if !wg::hy2_server_active() {
+        println!("❌ gnp-hy2 服务未激活 (运行 gnp-server install)");
         return Ok(());
     }
-    println!("✅ wg0 已激活");
-    println!("\n📋 wg0 详情:");
-    let raw = wg::wg_show_raw()?;
-    println!("{}", raw);
+    println!("✅ gnp-hy2 服务已激活");
+    if wg::port_443_listening() {
+        println!("✅ UDP 443 正在监听");
+    } else {
+        println!("⚠️  UDP 443 未检测到监听!");
+    }
+    println!("\n📋 服务详情:");
+    match wg::hy2_status_raw() {
+        Ok(raw) => println!("{}", raw),
+        Err(e) => println!("  (获取失败: {})", e),
+    }
     Ok(())
 }
 
-/// Peers 列表
-fn cmd_peers() -> Result<()> {
+/// 用户列表
+fn cmd_users() -> Result<()> {
     check_root()?;
-    println!("== 已注册客户端 ==");
-    let raw = wg::wg_show_raw()?;
-    // 解析 peer 公钥
-    let mut peers = Vec::new();
-    for line in raw.lines() {
-        if line.starts_with("peer:") {
-            peers.push(line.trim_start_matches("peer:").trim().to_string());
-        }
-    }
-    if peers.is_empty() {
-        println!("  (无客户端)");
+    println!("== 已注册用户 ==");
+    let content = std::fs::read_to_string(HY2_CONF).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+    let users = v
+        .get("inbounds")
+        .and_then(|i| i.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|inb| inb.get("users"))
+        .and_then(|u| u.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if users.is_empty() {
+        println!("  (无用户)");
         return Ok(());
     }
-    for (i, p) in peers.iter().enumerate() {
-        println!("  {}: {}", i + 1, p);
+    for (i, u) in users.iter().enumerate() {
+        let pwd = u.get("password").and_then(|p| p.as_str()).unwrap_or("?");
+        println!("  {}: {}", i + 1, pwd);
     }
     Ok(())
 }
 
-/// 添加 peer
-fn cmd_add_peer(name: &str) -> Result<()> {
+/// 读取当前 users 列表
+fn read_users() -> Result<Vec<serde_json::Value>> {
+    let content = std::fs::read_to_string(HY2_CONF).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+    Ok(v.get("inbounds")
+        .and_then(|i| i.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|inb| inb.get("users"))
+        .and_then(|u| u.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// 写入 users 列表并重启服务
+fn write_users(users: Vec<serde_json::Value>) -> Result<()> {
+    let content = std::fs::read_to_string(HY2_CONF).unwrap_or_default();
+    let mut v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+    v["inbounds"][0]["users"] = serde_json::Value::Array(users);
+    std::fs::write(HY2_CONF, serde_json::to_string_pretty(&v)?).context("写 config.json 失败")?;
+    let _ = Command::new("systemctl").args(["restart", "gnp-hy2"]).status();
+    Ok(())
+}
+
+/// 生成随机密码
+fn gen_password() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    // 简单随机: 时间戳 + 进程号 hash
+    let pid = std::process::id();
+    let h = |mut x: u128| -> u64 {
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51afd7ed558ccd);
+        x ^= x >> 33;
+        x as u64
+    };
+    let a = h(nanos);
+    let b = h(nanos.wrapping_add(pid as u128));
+    format!("gnp-{:x}{:x}", a, b)
+}
+
+/// 添加用户
+fn cmd_add_user(name: &str) -> Result<()> {
     check_root()?;
-    println!("== 添加客户端: {} ==", name);
+    println!("== 添加用户: {} ==", name);
 
-    // 生成 client 密钥
-    let client_priv = run_capture("wg", &["genkey"])?;
-    let client_pub = run_capture_with_input("wg", &["pubkey"], &client_priv)?;
+    let password = gen_password();
+    println!("  password: {}", password);
 
-    // 分配 IP
-    let client_ip = alloc_client_ip()?;
-    println!("  client IP: {}", client_ip);
+    // 加入 server 配置
+    let mut users = read_users()?;
+    if users
+        .iter()
+        .any(|u| u.get("password").and_then(|p| p.as_str()) == Some(password.as_str()))
+    {
+        bail!("密码冲突, 重新生成");
+    }
+    users.push(serde_json::json!({ "password": password }));
+    write_users(users)?;
 
-    // 添加 peer 到 wg0
-    let server_pub = run_capture("wg", &["show", WG_IFACE, "public-key"])?;
-    let _ = Command::new("wg")
-        .args(["set", WG_IFACE, "peer", client_pub.trim(), "allowed-ips", &format!("{}/32", client_ip)])
-        .status()
-        .context("wg set peer 失败")?;
-
-    // 持久化到 wg0.conf
-    append_peer_conf(&client_pub, &client_ip)?;
-
-    println!("\n✅ 客户端已添加!");
+    println!("\n✅ 用户已添加!");
     println!("==================");
-    println!("[Interface]");
-    println!("PrivateKey = {}", client_priv.trim());
-    println!("Address = {}/32", client_ip);
-    println!("");
-    println!("[Peer]");
-    println!("PublicKey = {}", server_pub.trim());
-    println!("Endpoint = <SERVER_IP>:{}", WG_PORT);
-    println!("AllowedIPs = 0.0.0.0/0");
-    println!("PersistentKeepalive = 25");
+    println!("server: {}:{}", SERVER_IP, HY2_PORT);
+    println!("password: {}", password);
     println!("==================");
     Ok(())
 }
 
-/// 预生成 N 个 peer
+/// 预生成 N 个用户密码包
 fn cmd_pregen(count: u32) -> Result<()> {
     check_root()?;
-    println!("== 预生成 {} 个 peer 配置包 ==", count);
-    std::fs::create_dir_all(PENDING_DIR).context("创建 pending-peers 目录失败")?;
-    let server_pub = run_capture("wg", &["show", WG_IFACE, "public-key"])?;
+    println!("== 预生成 {} 个用户密码包 ==", count);
+    std::fs::create_dir_all(PENDING_DIR).context("创建 pending-users 目录失败")?;
 
     for i in 0..count {
-        let client_priv = run_capture("wg", &["genkey"])?;
-        let client_pub = run_capture_with_input("wg", &["pubkey"], &client_priv)?;
-        let client_ip = alloc_client_ip()?;
+        let password = gen_password();
         let id = format!("{}-{}", uuid_prefix(), i + 1);
 
-        let peer_json = serde_json::json!({
+        let user_json = serde_json::json!({
             "id": id,
             "status": "available",
-            "client_public_key": client_pub.trim(),
-            "client_private_key": client_priv.trim(),
-            "client_ip": client_ip,
-            "server_public_key": server_pub.trim(),
-            "server_endpoint": format!("<SERVER_IP>:{}", WG_PORT),
+            "client_id": "",
+            "password": password,
+            "server_endpoint": format!("{}:{}", SERVER_IP, HY2_PORT),
             "created": now_iso(),
         });
         let out_path = PathBuf::from(PENDING_DIR).join(format!("{}.json", id));
-        std::fs::write(&out_path, serde_json::to_string_pretty(&peer_json)?)
-            .context("写 peer json 失败")?;
+        std::fs::write(&out_path, serde_json::to_string_pretty(&user_json)?)
+            .context("写用户 json 失败")?;
         std::fs::set_permissions(&out_path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
             .ok();
-        println!("  {} → {} (IP {})", id, out_path.display(), client_ip);
+        println!("  {} → {}", id, out_path.display());
     }
-    println!("\n✅ 生成 {} 个 peer, 存在 {}", count, PENDING_DIR);
+    println!("\n✅ 生成 {} 个用户, 存在 {}", count, PENDING_DIR);
+    println!("  将 pending-users/ 复制为 peers/ 并推送到 gitee 供客户端使用");
     Ok(())
 }
 
-/// 激活 peer
+/// 激活用户
 fn cmd_activate(id: &str) -> Result<()> {
     check_root()?;
-    println!("== 激活 peer: {} ==", id);
+    println!("== 激活用户: {} ==", id);
     let path = PathBuf::from(PENDING_DIR).join(format!("{}.json", id));
     if !path.exists() {
-        bail!("peer 不存在: {} (找 {} )", id, path.display());
+        bail!("用户不存在: {} (找 {} )", id, path.display());
     }
     let content = std::fs::read_to_string(&path)?;
-    let v: serde_json::Value = serde_json::from_str(&content)?;
-    let client_pub = v["client_public_key"].as_str().unwrap_or_default().to_string();
-    let client_ip = v["client_ip"].as_str().unwrap_or_default().to_string();
+    let mut v: serde_json::Value = serde_json::from_str(&content)?;
+    let password = v["password"].as_str().unwrap_or_default().to_string();
 
-    // 加入 wg0
-    let _ = Command::new("wg")
-        .args([
-            "set",
-            WG_IFACE,
-            "peer",
-            &client_pub,
-            "allowed-ips",
-            &format!("{}/32", client_ip),
-        ])
-        .status()
-        .context("wg set peer 失败")?;
-    append_peer_conf(&client_pub, &client_ip)?;
+    // 加入 server
+    let mut users = read_users()?;
+    if users
+        .iter()
+        .any(|u| u.get("password").and_then(|p| p.as_str()) == Some(password.as_str()))
+    {
+        println!("⚠️  密码已存在于 server, 跳过加入");
+    } else {
+        users.push(serde_json::json!({ "password": password }));
+        write_users(users)?;
+    }
 
     // 更新状态
-    let mut v = v;
     v["status"] = serde_json::json!("activated");
     std::fs::write(&path, serde_json::to_string_pretty(&v)?)?;
 
-    println!("✅ peer {} 已激活 (IP {})", id, client_ip);
+    println!("✅ 用户 {} 已激活", id);
     Ok(())
 }
 
 // --- 辅助 ---
-
-/// 运行命令捕获 stdout
-fn run_capture(cmd: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(cmd).args(args).output().context(format!("{} 失败", cmd))?;
-    if !out.status.success() {
-        bail!("{} 失败: {}", cmd, String::from_utf8_lossy(&out.stderr));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-/// 运行命令, 通过 stdin 传输入
-fn run_capture_with_input(cmd: &str, args: &[&str], input: &str) -> Result<String> {
-    use std::io::Write;
-    use std::process::Stdio;
-    let mut child = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context(format!("{} 启动失败", cmd))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input.as_bytes())?;
-    }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("{} 失败", cmd);
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-/// 分配客户端 IP (从 wg0 已用 IP 递增)
-fn alloc_client_ip() -> Result<String> {
-    // 从 wg0.conf 读取已用 IP
-    let used: Vec<String> = Vec::new();
-    if let Ok(content) = std::fs::read_to_string(WG_CONF) {
-        // 简单解析 AllowedIPs
-        for line in content.lines() {
-            if line.contains("AllowedIPs") {
-                if let Some(ip) = line.split_whitespace().last() {
-                    let ip = ip.split('/').next().unwrap_or("");
-                    // 收集
-                }
-            }
-        }
-    }
-    // 简化: 从 10.0.0.2 开始递增
-    let base = 2;
-    // 用固定值 (实际应扫描)
-    Ok(format!("10.0.0.{}", base))
-}
-
-/// 追加 peer 到 wg0.conf
-fn append_peer_conf(pubkey: &str, ip: &str) -> Result<()> {
-    let peer_conf = format!(
-        "\n[Peer]\nPublicKey = {}\nAllowedIPs = {}/32\n",
-        pubkey, ip
-    );
-    let mut content = std::fs::read_to_string(WG_CONF).unwrap_or_default();
-    content.push_str(&peer_conf);
-    std::fs::write(WG_CONF, content).context("写 wg0.conf 失败")?;
-    Ok(())
-}
 
 /// UUID 前缀 (简化)
 fn uuid_prefix() -> String {

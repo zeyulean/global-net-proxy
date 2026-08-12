@@ -4,7 +4,7 @@
 //! - platform: 平台检测与路径管理
 //! - service:  跨平台服务管理 (launchctl/systemd)
 //! - config:   sing-box config.json 解析与生成
-//! - wg:       WireGuard 隧道诊断
+//! - wg:       Hysteria2 (QUIC) 隧道诊断
 
 pub mod config;
 pub mod install;

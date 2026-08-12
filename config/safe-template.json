@@ -13,7 +13,7 @@
       {
         "tag": "dns-proxy",
         "address": "1.1.1.1",
-        "detour": "wg-out",
+        "detour": "hy2-out",
         "type": "tcp"
       }
     ],
@@ -33,16 +33,12 @@
   ],
   "outbounds": [
     {
-      "type": "wireguard",
-      "tag": "wg-out",
-      "local_address": ["10.0.0.5/32"],
-      "private_key": "REPLACE_WITH_YOUR_PRIVATE_KEY",
-      "peer_public_key": "REPLACE_WITH_SERVER_PUBLIC_KEY",
+      "type": "hysteria2",
+      "tag": "hy2-out",
       "server": "8.209.203.17",
-      "server_port": 1194,
-      "mtu": 1280,
-      "system": false,
-      "reserved": [0, 0, 0]
+      "server_port": 443,
+      "password": "REPLACE_WITH_YOUR_PASSWORD",
+      "tls": { "enabled": true, "insecure": true }
     },
     { "type": "direct", "tag": "direct" }
   ],
@@ -58,14 +54,14 @@
     ],
     "rules": [
       { "ip_is_private": true, "outbound": "direct" },
-      { "rule_set": "geosite-google", "outbound": "wg-out" },
-      { "rule_set": "geosite-github", "outbound": "wg-out" },
-      { "rule_set": "geosite-openai", "outbound": "wg-out" },
-      { "rule_set": "geosite-anthropic", "outbound": "wg-out" },
-      { "rule_set": "geosite-docker", "outbound": "wg-out" },
-      { "domain": [ "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "crates.io", "static.crates.io", "proxy.golang.org", "go.dev", "repo.maven.apache.org", "search.maven.org", "maven.apache.org" ], "outbound": "wg-out" },
+      { "rule_set": "geosite-google", "outbound": "hy2-out" },
+      { "rule_set": "geosite-github", "outbound": "hy2-out" },
+      { "rule_set": "geosite-openai", "outbound": "hy2-out" },
+      { "rule_set": "geosite-anthropic", "outbound": "hy2-out" },
+      { "rule_set": "geosite-docker", "outbound": "hy2-out" },
+      { "domain": [ "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "crates.io", "static.crates.io", "proxy.golang.org", "go.dev", "repo.maven.apache.org", "search.maven.org", "maven.apache.org" ], "outbound": "hy2-out" },
       { "rule_set": [ "geoip-cn", "geosite-cn" ], "outbound": "direct" }
     ],
-    "final": "wg-out"
+    "final": "hy2-out"
   }
 }

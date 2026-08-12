@@ -46,7 +46,7 @@ fi
 
 echo ""
 echo "=== 最终状态 ==="
-echo "wg 接口 (应只有 wg-router, 没有 gnp):"
+echo "sing-box 进程 (应只有 gnp-quic, 没有 gnp):"
 ip link show | grep wg
 echo ""
 echo "默认路由:"

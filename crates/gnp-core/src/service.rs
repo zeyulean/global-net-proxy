@@ -42,11 +42,6 @@ pub fn launchd_plist_content() -> String {
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>ENABLE_DEPRECATED_WIREGUARD_OUTBOUND</key>
-        <string>true</string>
-    </dict>
     <key>StandardOutPath</key>
     <string>/tmp/sing-box-gnp.log</string>
     <key>StandardErrorPath</key>
@@ -63,8 +58,6 @@ pub fn launchd_plist_content() -> String {
 /// 生成 systemd 单元内容 (Linux 开机自启, 系统级)
 ///
 /// 使用系统级 systemd (/etc/systemd/system/), 需 root 安装但更可靠。
-/// 包含 Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true,
-/// 因为 sing-box 1.12 的 outbound wireguard 需要 此环境变量。
 pub fn systemd_unit_content() -> String {
     format!(
         r#"[Unit]
@@ -74,7 +67,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
 ExecStart={bin} run -c {conf}
 Restart=on-failure
 RestartSec=10

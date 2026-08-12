@@ -209,7 +209,7 @@ main() {
     info "  gnp-server: ${SYS_BIN_DIR:-$INSTALL_BIN}/gnp-server"
     info ""
     info "使用:"
-    info "  gnp-client start | stop | status | wg | config | test | install"
+    info "  gnp-client start | stop | status | hy2 | config | test | install"
     info "  gnp-client register --list               # 查看 peer 池"
     info "  gnp-client register --client-id myname    # 自动注册"
     info "  gnp-client update-rules --check          # 检查 sing-box 守护"

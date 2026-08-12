@@ -7,8 +7,8 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
-/// sing-box 版本 (1.13 endpoint wireguard 有 bug, 降级到 1.12.3 用 outbound wireguard)
-pub const SB_VERSION: &str = "1.12.3";
+/// sing-box 版本 (hysteria2 outbound 需要新版, 默认 1.13.16)
+pub const SB_VERSION: &str = "1.13.16";
 
 /// 下载 URL 模板
 fn download_url(version: &str, os: &str, arch: &str) -> Result<String> {
@@ -158,24 +158,21 @@ pub fn install_rules() -> Result<()> {
     Ok(())
 }
 
-/// 生成 config.json (mixed 模式模板, sing-box 1.12 outbound wireguard 格式)
+/// 生成 config.json (mixed 模式模板, sing-box hysteria2 outbound 格式)
 ///
-/// 使用 outbound wireguard (1.12 旧格式), 需配合环境变量
-/// ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true 使用。
-/// DNS: 国外域名经 wg 走 1.1.1.1 UDP (非 DoH), 用 socks5h 远程解析。
+/// client 用 hysteria2 outbound (QUIC/UDP 443), 密码认证。
+/// DNS: 国外域名经 hy2 走 1.1.1.1 TCP, 用 socks5h 远程解析。
 pub fn generate_config(
     server: &str,
-    server_pubkey: &str,
-    client_privkey: &str,
-    client_ip: &str,
-    wg_port: u16,
+    password: &str,
+    server_port: u16,
 ) -> Result<()> {
     let config = serde_json::json!({
         "log": { "level": "info", "timestamp": true },
         "dns": {
             "servers": [
                 { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
-                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "wg-out", "type": "tcp" }
+                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "hy2-out", "type": "tcp" }
             ],
             "rules": [
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
@@ -191,16 +188,12 @@ pub fn generate_config(
         }],
         "outbounds": [
             {
-                "type": "wireguard",
-                "tag": "wg-out",
-                "local_address": [client_ip],
-                "private_key": client_privkey,
-                "peer_public_key": server_pubkey,
+                "type": "hysteria2",
+                "tag": "hy2-out",
                 "server": server,
-                "server_port": wg_port,
-                "mtu": 1280,
-                "system": false,
-                "reserved": [0, 0, 0]
+                "server_port": server_port,
+                "password": password,
+                "tls": { "enabled": true, "insecure": true }
             },
             { "type": "direct", "tag": "direct" }
         ],
@@ -213,7 +206,7 @@ pub fn generate_config(
                 { "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" },
                 { "ip_is_private": true, "outbound": "direct" }
             ],
-            "final": "wg-out"
+            "final": "hy2-out"
         }
     });
 

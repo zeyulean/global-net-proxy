@@ -14,21 +14,18 @@ use std::process::Command;
 const GITEE_REPO: &str = "lw_boy/global-net-proxy";
 const GITEE_BRANCH: &str = "main";
 
-/// lwtop server 配置 (公钥可公开)
+/// lwtop server 配置 (hysteria2/QUIC, 密码认证)
 const SERVER_HOST: &str = "8.209.203.17";
-const SERVER_PORT: u16 = 1194;
-const SERVER_PUBKEY: &str = "M/t3YYwIW7Xou+vASGtNoAHHNrh82ROzYDU4LIsLz18=";
+const SERVER_PORT: u16 = 443;
+/// 测试密码 (与 server 端 /opt/gnp-quic 配置一致)
+const HY2_PASSWORD: &str = "gnp-quic-test-password";
 
-/// peer 池 JSON 结构
+/// peer 池 JSON 结构 (hysteria2: 只需 password)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
     pub client_id: String,
-    #[serde(rename = "wg_ip")]
-    pub wg_ip: String,
-    #[serde(rename = "private_key")]
-    pub private_key: String,
-    #[serde(rename = "public_key")]
-    pub public_key: String,
+    #[serde(rename = "password")]
+    pub password: String,
     pub status: String,
     #[serde(default)]
     pub activated: bool,
@@ -98,18 +95,18 @@ fn cmd_list(repo: &Path) -> Result<()> {
     for p in &peers {
         match p.status.as_str() {
             "available" => {
-                println!("  ✓ {}  {}  [{}]", p.client_id, p.wg_ip, p.status);
+                println!("  ✓ {}  {}  [{}]", p.client_id, p.password, p.status);
                 available += 1;
             }
             "used" => {
-                println!("  ● {}  {}  [{}]", p.client_id, p.wg_ip, p.status);
+                println!("  ● {}  {}  [{}]", p.client_id, p.password, p.status);
                 used += 1;
             }
             "activated" => {
-                println!("  ★ {}  {}  [{}]", p.client_id, p.wg_ip, p.status);
+                println!("  ★ {}  {}  [{}]", p.client_id, p.password, p.status);
                 activated += 1;
             }
-            _ => println!("  ? {}  {}  [{}]", p.client_id, p.wg_ip, p.status),
+            _ => println!("  ? {}  {}  [{}]", p.client_id, p.password, p.status),
         }
     }
     println!(
@@ -175,40 +172,37 @@ fn mark_peer_used(repo: &Path, peer_file: &Path, client_id: &str) -> Result<()> 
     Ok(())
 }
 
-/// 校验 server 公钥 (防止 gitee 上的 SERVER_PUBKEY 被篡改)
-fn verify_server_pubkey(repo: &Path) {
-    let spk = repo.join("peers").join("SERVER_PUBKEY");
+/// 校验 server 密码 (防止 gitee 上的 HY2_PASSWORD 被篡改)
+fn verify_server_password(repo: &Path) {
+    let spk = repo.join("peers").join("HY2_PASSWORD");
     if let Ok(content) = std::fs::read_to_string(&spk) {
-        let gitee_pubkey = content.trim().to_string();
-        if !gitee_pubkey.is_empty() && gitee_pubkey != SERVER_PUBKEY {
+        let gitee_pwd = content.trim().to_string();
+        if !gitee_pwd.is_empty() && gitee_pwd != HY2_PASSWORD {
             println!(
-                "⚠️  gitee 上的 SERVER_PUBKEY ({}) 与内置 ({}) 不一致! 使用内置值 (更安全)",
-                gitee_pubkey, SERVER_PUBKEY
+                "⚠️  gitee 上的 HY2_PASSWORD ({}) 与内置 ({}) 不一致! 使用内置值 (更安全)",
+                gitee_pwd, HY2_PASSWORD
             );
         }
     }
 }
 
-/// 生成 config (mixed 模式, sing-box 1.12 outbound wireguard 格式, 安全)
+/// 生成 config (mixed 模式, sing-box hysteria2 outbound 格式, 安全)
 ///
-/// 使用 outbound wireguard (1.12 旧格式), 需配合环境变量
-/// ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true 使用。
-/// DNS: 国外域名经 wg 走 1.1.1.1 UDP (非 DoH), 用 socks5h 远程解析。
+/// DNS: 国外域名经 hysteria2 走 1.1.1.1 TCP, 用 socks5h 远程解析。
 fn generate_conf(peer: &Peer) -> Result<()> {
     let sb_dir = gnp_core::platform::sb_dir();
     let rules_dir = gnp_core::platform::sb_rules_dir();
     std::fs::create_dir_all(&sb_dir)?;
     std::fs::create_dir_all(&rules_dir)?;
 
-    let wg_ip = peer.wg_ip.clone();
-    let privkey = peer.private_key.clone();
+    let password = peer.password.clone();
 
     let config = serde_json::json!({
         "log": { "level": "info", "timestamp": true },
         "dns": {
             "servers": [
                 { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
-                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "wg-out", "type": "tcp" }
+                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "hy2-out", "type": "tcp" }
             ],
             "rules": [
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
@@ -224,16 +218,12 @@ fn generate_conf(peer: &Peer) -> Result<()> {
         }],
         "outbounds": [
             {
-                "type": "wireguard",
-                "tag": "wg-out",
-                "local_address": [wg_ip],
-                "private_key": privkey,
-                "peer_public_key": SERVER_PUBKEY,
+                "type": "hysteria2",
+                "tag": "hy2-out",
                 "server": SERVER_HOST,
                 "server_port": SERVER_PORT,
-                "mtu": 1280,
-                "system": false,
-                "reserved": [0, 0, 0]
+                "password": password,
+                "tls": { "enabled": true, "insecure": true }
             },
             { "type": "direct", "tag": "direct" }
         ],
@@ -246,7 +236,7 @@ fn generate_conf(peer: &Peer) -> Result<()> {
                 { "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" },
                 { "ip_is_private": true, "outbound": "direct" }
             ],
-            "final": "wg-out"
+            "final": "hy2-out"
         }
     });
 
@@ -291,8 +281,8 @@ pub fn run(args: &RegisterArgs) -> Result<()> {
     let peer = select_peer(&peers, &client_id)?.clone();
     println!("\n═══════════════════════════════════════");
     println!("选中 peer: {} → {}", peer.client_id, client_id);
-    println!("  wg_ip:    {}", peer.wg_ip);
-    println!("  public_key: {}...", &peer.public_key[..peer.public_key.len().min(24)]);
+    println!("  password: {}", peer.password);
+    println!("  server:   {}:{}", SERVER_HOST, SERVER_PORT);
     println!("  status:   {}", peer.status);
     println!("═══════════════════════════════════════");
 
@@ -306,8 +296,8 @@ pub fn run(args: &RegisterArgs) -> Result<()> {
         return Ok(());
     }
 
-    // 校验 server 公钥
-    verify_server_pubkey(&repo);
+    // 校验 server 密码
+    verify_server_password(&repo);
 
     // 标记 used + push
     let peer_file = repo.join("peers").join(format!("{}.json", peer.client_id));
@@ -347,7 +337,7 @@ pub fn run(args: &RegisterArgs) -> Result<()> {
     println!("  gnp-client start");
     println!("使用代理:");
     println!("  export https_proxy=http://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080");
-    println!("\n注册完成! client_id={}  wg_ip={}", client_id, peer.wg_ip);
+    println!("\n注册完成! client_id={}  server={}:{}", client_id, SERVER_HOST, SERVER_PORT);
     Ok(())
 }
 

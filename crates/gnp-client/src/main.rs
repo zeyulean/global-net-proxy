@@ -1,6 +1,6 @@
 //! gnp-client — global-net-proxy client CLI
 //!
-//! 管理本机 sing-box mixed 代理 (wg 隧道)。
+//! 管理本机 sing-box mixed 代理 (hysteria2/QUIC 隧道)。
 //! 安全原则: 只用 mixed 代理模式 (socks5+http on 1080), 不碰路由表, 零断网风险。
 
 mod cleanup;
@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 
 use gnp_core::{config, install, platform, proxy, service, wg};
 
-/// global-net-proxy client — 管理 sing-box mixed 代理 (wg 隧道)
+/// global-net-proxy client — 管理 sing-box mixed 代理 (hysteria2/QUIC 隧道)
 ///
 /// 安全原则: 本工具只使用 mixed 代理模式 (socks5+http on 127.0.0.1:1080),
 /// 不修改系统路由表, 零断网风险。绝不用 tun 模式。
@@ -21,13 +21,13 @@ use gnp_core::{config, install, platform, proxy, service, wg};
 /// 快速开始:
 ///   gnp-client start     # 启动代理 (开机自启)
 ///   gnp-client status    # 查看状态
-///   gnp-client wg        # wg 隧道诊断
+///   gnp-client wg        # 隧道诊断
 #[derive(Parser)]
 #[command(
     name = "gnp-client",
     version,
     about = "global-net-proxy client (sing-box mixed 代理)",
-    long_about = "管理本机 sing-box mixed 代理 (wg 隧道)。\n\
+    long_about = "管理本机 sing-box mixed 代理 (hysteria2/QUIC 隧道)。\n\
         \n\
         安全原则: 只用 mixed 代理模式 (socks5+http on 127.0.0.1:1080),\n\
         不碰路由表, 零断网风险。绝不用 tun 模式。\n\
@@ -42,7 +42,7 @@ use gnp_core::{config, install, platform, proxy, service, wg};
         gnp-client start           启动代理 (注册开机自启)\n  \
         gnp-client stop            停止代理\n  \
         gnp-client status          查看状态 (进程/端口/隧道/出口IP)\n  \
-        gnp-client wg              WireGuard 隧道诊断\n  \
+        gnp-client wg              隧道诊断\n  \
         gnp-client test            测试代理连通性\n  \
         gnp-client config --check  校验配置安全\n  \
         gnp-client proxy --on      开启系统代理 (macOS)\n\
@@ -79,7 +79,7 @@ enum Commands {
         1. 安装状态 (sing-box 二进制 + config.json)\n  \
         2. 进程状态 (是否运行中)\n  \
         3. 端口 1080 是否在监听\n  \
-        4. 配置安全检查 (无 tun/strict_route, 有 mixed+wg)\n  \
+        4. 配置安全检查 (无 tun/strict_route, 有 mixed+hysteria2)\n  \
         5. 隧道出口 IP 和延迟 (如果运行中)\n\n\
         示例:\n  \
         gnp-client status")]
@@ -89,7 +89,7 @@ enum Commands {
         校验项:\n  \
         - 无 tun/strict_route/auto_route (危险配置检测)\n  \
         - 有 mixed inbound (socks5+http)\n  \
-        - 有 wg endpoint (WireGuard outbound)\n\n\
+        - 有 hysteria2 outbound\n\n\
         示例:\n  \
         gnp-client config --check   # 校验配置安全性\n  \
         gnp-client config --show    # 显示完整 JSON 配置")]
@@ -97,14 +97,14 @@ enum Commands {
         /// 显示完整配置内容
         #[arg(long)]
         show: bool,
-        /// 校验配置是否正确 (无 tun/strict_route, 有 mixed+wg)
+        /// 校验配置是否正确 (无 tun/strict_route, 有 mixed+hysteria2)
         #[arg(long)]
         check: bool,
     },
-    /// wg 隧道诊断
-    #[command(long_about = "显示 WireGuard 隧道配置详情并测试连通性。\n\n\
+    /// 隧道诊断
+    #[command(long_about = "显示 hysteria2/QUIC 隧道配置详情并测试连通性。\n\n\
         输出内容:\n  \
-        1. 隧道配置 (本机 wg IP / 远端 server:port / MTU / 密钥状态)\n  \
+        1. 隧道配置 (远端 server:port / 密码状态)\n  \
         2. 隧道连通性 (通过 socks5h 检测出口 IP 和延迟)\n  \
         3. 代理测试 (github + google HTTP 状态码)\n\n\
         示例:\n  \
@@ -121,40 +121,33 @@ enum Commands {
         gnp-client test")]
     Test,
     /// 安装 sing-box + 规则集 + 生成配置
-    #[command(long_about = "下载 sing-box 二进制 + 规则集, 生成 mixed+wg 配置。\n\n\
-        行为步骤:\n  \
-        1. 下载 sing-box v1.12.3 (非 1.13, endpoint wg 有 bug)\n  \
-        2. 下载规则集 (geosite-cn, geoip-cn, google, github, openai 等)\n  \
-        3. 生成 config.json (mixed + wg outbound 格式)\n  \
-        4. Linux 自动安装 systemd 系统级服务\n\n\
-        需要 server 地址/公钥/本机私钥/IP。\n\n\
-        示例:\n  \
-        gnp-client install \\\n    \
-        --server 8.209.203.17 \\\n    \
-        --server-pubkey M/t3YYw... \\\n    \
-        --client-privkey <你的私钥> \\\n    \
-        --client-ip 10.0.0.5/32\n\n\
-        注意: 私钥需要安全传输, 不要泄露。")]
-    Install {
-        /// 远端 wg server 地址 (IP 或域名)
-        #[arg(long)]
-        server: String,
-        /// 远端 server 公钥
-        #[arg(long)]
-        server_pubkey: String,
-        /// 本机私钥
-        #[arg(long)]
-        client_privkey: String,
-        /// 本机 wg IP (如 10.0.0.5/32)
-        #[arg(long)]
-        client_ip: String,
-        /// wg 端口 (默认 1194)
-        #[arg(long, default_value_t = 1194)]
-        wg_port: u16,
-        /// 只下载 sing-box (不生成配置)
-        #[arg(long)]
-        bin_only: bool,
-    },
+        #[command(long_about = "下载 sing-box 二进制 + 规则集, 生成 mixed+hysteria2 配置。\n\n\
+            行为步骤:\n  \
+            1. 下载 sing-box (with_quic, 支持 hysteria2)\n  \
+            2. 下载规则集 (geosite-cn, geoip-cn, google, github, openai 等)\n  \
+            3. 生成 config.json (mixed + hysteria2 outbound 格式)\n  \
+            4. Linux 自动安装 systemd 系统级服务\n\n\
+            需要 server 地址/端口/密码。\n\n\
+            示例:\n  \
+            gnp-client install \\\\\\n    \
+            --server 8.209.203.17 \\\\\\n    \
+            --password <密码> \\\\\\n    \
+            --server-port 443\n\n\
+            注意: 密码需要安全传输, 不要泄露。")]
+        Install {
+            /// 远端 hysteria2 server 地址 (IP 或域名)
+            #[arg(long)]
+            server: String,
+            /// hysteria2 密码
+            #[arg(long)]
+            password: String,
+            /// server 端口 (默认 443, hysteria2/QUIC UDP)
+            #[arg(long, default_value_t = 443)]
+            server_port: u16,
+            /// 只下载 sing-box (不生成配置)
+            #[arg(long)]
+            bin_only: bool,
+        },
     /// 自动注册新机器 (从 gitee peer 池取配置)
     #[command(long_about = "从 gitee 私有仓库的 peer 池自动取配置, 一键完成安装。\n\n\
         工作流程:\n  \
@@ -264,19 +257,10 @@ fn main() -> Result<()> {
         Commands::Test => cmd_test(),
         Commands::Install {
             server,
-            server_pubkey,
-            client_privkey,
-            client_ip,
-            wg_port,
+            password,
+            server_port,
             bin_only,
-        } => cmd_install(
-            &server,
-            &server_pubkey,
-            &client_privkey,
-            &client_ip,
-            wg_port,
-            bin_only,
-        ),
+        } => cmd_install(&server, &password, server_port, bin_only),
         Commands::Register {
             client_id,
             list,
@@ -288,7 +272,7 @@ fn main() -> Result<()> {
         }),
         Commands::UpdateRules {
             update,
-            check,
+            check: _,
             install_cron,
         } => {
             if install_cron {
@@ -308,10 +292,8 @@ fn main() -> Result<()> {
 /// 安装
 fn cmd_install(
     server: &str,
-    server_pubkey: &str,
-    client_privkey: &str,
-    client_ip: &str,
-    wg_port: u16,
+    password: &str,
+    server_port: u16,
     bin_only: bool,
 ) -> Result<()> {
     let platform = platform::ensure_supported()?;
@@ -332,7 +314,7 @@ fn cmd_install(
 
     // 3. 生成配置 (除非 bin_only)
     if !bin_only {
-        install::generate_config(server, server_pubkey, client_privkey, client_ip, wg_port)?;
+        install::generate_config(server, password, server_port)?;
         println!("✅ 配置已生成, 运行 `gnp-client start` 启动");
     } else {
         println!("✅ 只安装了二进制 (--bin-only), 未生成配置");
@@ -401,20 +383,20 @@ fn cmd_status() -> Result<()> {
         if let Ok(v) = config::load(&cfg_path) {
             let safe = config::is_safe(&v);
             let has_mixed = config::has_mixed_inbound(&v);
-            let has_wg = config::has_wg_endpoint(&v);
+            let has_hy2 = config::has_hy2_endpoint(&v);
             println!("\n🔒 配置安全:");
             println!(
                 "  无 tun/strict_route: {}",
                 if safe { "✅" } else { "❌ 危险!" }
             );
             println!("  mixed inbound: {}", if has_mixed { "✅" } else { "❌" });
-            println!("  wg endpoint: {}", if has_wg { "✅" } else { "❌" });
+            println!("  hysteria2 outbound: {}", if has_hy2 { "✅" } else { "❌" });
         }
     }
 
     // 5. 隧道状态 (如果运行中)
     if running {
-        println!("\n🌐 wg 隧道:");
+        println!("\n🌐 隧道:");
         match test_proxy_simple() {
             Ok((ip, ms)) => println!("  出口 IP: {} ({}ms)", ip, ms),
             Err(e) => println!("  出口检测失败: {}", e),
@@ -435,14 +417,17 @@ fn cmd_config(show: bool, check: bool) -> Result<()> {
     if check {
         let safe = config::is_safe(&v);
         let has_mixed = config::has_mixed_inbound(&v);
-        let has_wg = config::has_wg_endpoint(&v);
+        let has_hy2 = config::has_hy2_endpoint(&v);
         println!("== 配置校验 ==");
         println!(
             "  无 tun/strict_route: {}",
             if safe { "✅" } else { "❌ 危险!" }
         );
         println!("  mixed inbound: {}", if has_mixed { "✅" } else { "❌" });
-        println!("  wg endpoint: {}", if has_wg { "✅" } else { "❌" });
+        println!(
+            "  hysteria2 outbound: {}",
+            if has_hy2 { "✅" } else { "❌" }
+        );
         if !safe {
             anyhow::bail!("检测到危险配置 (tun/strict_route)! 请立即修复。");
         }
@@ -458,22 +443,20 @@ fn cmd_config(show: bool, check: bool) -> Result<()> {
     Ok(())
 }
 
-/// wg 诊断
+/// 隧道诊断
 fn cmd_wg() -> Result<()> {
     let platform = platform::ensure_supported()?;
-    println!("== wg 隧道诊断 ({}) ==", platform.as_str());
+    println!("== 隧道诊断 ({}) ==", platform.as_str());
 
     // 读配置
     if platform::config_exists() {
         let v = config::load(&platform::sb_config())?;
-        if let Some(wg) = config::extract_wg_endpoint(&v) {
+        if let Some(hy2) = config::extract_hy2_endpoint(&v) {
             println!("\n📋 隧道配置:");
-            println!("  本机 wg IP: {}", wg.address);
-            println!("  远端 server: {}:{}", wg.peer_address, wg.peer_port);
-            println!("  MTU: {}", wg.mtu);
+            println!("  远端 server: {}:{}", hy2.server, hy2.server_port);
             println!(
-                "  密钥: 已配置 ({} 字符)",
-                wg.private_key.len()
+                "  密码: 已配置 ({} 字符)",
+                hy2.password.len()
             );
         }
     }
