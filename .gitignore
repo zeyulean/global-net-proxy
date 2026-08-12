@@ -15,4 +15,4 @@
 # 临时文件
 *.tmp
 *.log
-.DS_Store
+.DS_Storequic-test/certs/*.key
