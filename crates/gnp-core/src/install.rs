@@ -189,6 +189,9 @@ pub fn generate_config(
 ) -> Result<()> {
     let config = serde_json::json!({
         "log": { "level": "info", "timestamp": true },
+        // DNS: fakeip 架构 (2026-08-15 AP 分流故障教训, 见 docs/incident-2026-08-15-dns.md)
+        // - 应答即时返回假 IP, 消除 hijack-dns 直答客户端的 400-1000ms 迟滞
+        // - 连接进来后按域名分流: CN → direct 内部真解析(~20ms), 海外 → hy2 携域名出海无污染
         "dns": {
             "servers": [
                 { "tag": "dns-direct", "type": "udp", "server": "223.5.5.5" },
@@ -198,7 +201,12 @@ pub fn generate_config(
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
             ],
             "final": "dns-remote",
-            "strategy": "prefer_ipv4"
+            "strategy": "ipv4_only",
+            "fakeip": {
+                "enabled": true,
+                "inet4_range": "198.18.0.0/15",
+                "independent_cache": true
+            }
         },
         "inbounds": [{
             "type": "mixed",
@@ -228,6 +236,14 @@ pub fn generate_config(
             ],
             "final": "hy2-out",
             "default_domain_resolver": "dns-direct"
+        },
+        // cache_file 必须绝对路径 — systemd CWD=/ 不可写, 相对路径 cache.db 启动即死
+        // (2026-08-15 aipro gnp-proxy crash-loop 111 次教训)
+        "experimental": {
+            "cache_file": {
+                "enabled": true,
+                "path": sb_dir().join("cache.db").to_str().unwrap()
+            }
         }
     });
 

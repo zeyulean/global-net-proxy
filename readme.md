@@ -37,7 +37,8 @@ gnp-client env                   # 查看当前 shell 代理状态
 > **绝不在无带外访问的机器上使用 tun 模式。**
 > tun 的 `strict_route` + `auto_route` 会接管系统路由表，一旦配置有误会导致完全断网。
 > mixed 代理模式只监听端口，不碰路由表，是安全替代方案。
-> 详见 [aipro 断网事故记录](docs/incident-2026-08-10.md)。
+> 详见 [aipro 断网事故记录](docs/incident-2026-08-10.md) 与
+> [2026-08-15 分流故障全档案](docs/incident-2026-08-15-dns.md)（DNS 污染/rule-set 阻塞/hijack 迟滞/cache 路径四层根因）。
 
 ## 架构
 
