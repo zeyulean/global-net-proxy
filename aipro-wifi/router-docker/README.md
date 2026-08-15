@@ -72,6 +72,10 @@ nmcli device set wlan1 managed no     # 若 NM 又抢 wlan1（持久配置已写
 ## 已知限制 / 后续
 
 - 信道宽度 20MHz（VHT80 参数对 FullMAC 驱动未生效，可再调）
-- 全部流量走 hy2（无 CN 分流规则）——需要可加 route rule geosite cn → direct
+- **分流已启用**（2026-08-15）：rule-set geosite-cn/geoip-cn → direct，DNS 分流
+  （geosite-cn → 223.5.5.5 直连，其余 → 8.8.8.8 隧道内）；实测 baidu 0.04s 直连、
+  google 0.16s 走代理、CN 出口=本地宽带、海外出口=hy2 服务器
+- rule-set 首次从 raw.githubusercontent 下载（aipro 直连可达），cache_file 缓存后离线可用
 - 5G 信道受世界域限制少（30/30 可用），2.4G 的 12/13 no-IR 不影响本 AP
 - USB2 共享带宽，实测 ~800KB/s 下载（≈6.5Mbps）；上代理够用，大流量需换 USB3 网卡或有线
+- gnp 宿主代理（:1080）已同步加同套分流规则；aipro 服务文件 wg 残留已清
