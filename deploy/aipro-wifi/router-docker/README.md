@@ -80,6 +80,22 @@ nmcli device set wlan1 managed no     # 若 NM 又抢 wlan1（持久配置已写
 配套：wlan0 栈走 modules-load.d + NM 自动连 XinYuan；wlan1 持久 unmanaged。
 真机重启验证：27s 内 wlan0 连接 + wlan1 AP + 容器 Up 全部就位。
 
+## DNS 架构：fakeip（2026-08-15 重要修复）
+
+**问题**：sing-box hijack-dns 直接应答客户端时迟滞（CN 域名 400-1000ms，
+baidu 打开 1.7-7.8s；模块级偶发丢包）。此前 remote rule-set 拉取阻塞是另一坑
+（已改 local .srs 烧进镜像）。
+
+**修复**：dns.fakeip（198.18.0.0/15 + independent_cache）——
+DNS 应答**即时返回假 IP**（零上游等待）；连接进入 tproxy 后由 sing-box
+按假 IP 反查域名 → 域名规则路由（geosite-cn → direct 出站时内部解析 20ms；
+其余 → hy2 直接携带域名出海，无污染）。
+
+实测：DNS 22-54ms / baidu 0.067s / taobao 0.20s / google 0.16s。
+
+⚠️ fakeip 副作用：客户端 `ping` 域名显示 198.18.x.x 假 IP 且不通（ICMP 不走
+tproxy）——纯观感问题，浏览器/应用完全无感。
+
 ## 已知限制 / 后续
 
 - 信道宽度 20MHz（VHT80 参数对 FullMAC 驱动未生效，可再调）

@@ -1,15 +1,36 @@
 {
-  "log": { "level": "info", "timestamp": true },
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
   "dns": {
     "servers": [
-      { "tag": "remote", "address": "8.8.8.8", "detour": "hy2-out" },
-      { "tag": "local", "address": "223.5.5.5", "detour": "direct" }
+      {
+        "tag": "remote",
+        "address": "8.8.8.8",
+        "detour": "hy2-out"
+      },
+      {
+        "tag": "local",
+        "address": "223.5.5.5",
+        "detour": "direct"
+      }
     ],
     "rules": [
-      { "rule_set": ["geosite-cn"], "server": "local" }
+      {
+        "rule_set": [
+          "geosite-cn"
+        ],
+        "server": "local"
+      }
     ],
     "final": "remote",
-    "strategy": "ipv4_only"
+    "strategy": "ipv4_only",
+    "fakeip": {
+      "enabled": true,
+      "inet4_range": "198.18.0.0/15",
+      "independent_cache": true
+    }
   },
   "inbounds": [
     {
@@ -34,34 +55,62 @@
       "server": "8.209.203.17",
       "server_port": 443,
       "password": "__HY2_PASSWORD__",
-      "tls": { "enabled": true, "insecure": true }
+      "tls": {
+        "enabled": true,
+        "insecure": true
+      }
     },
-    { "type": "direct", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
   "route": {
     "rules": [
-      { "action": "sniff" },
-      { "protocol": "dns", "action": "hijack-dns" },
-      { "ip_is_private": true, "outbound": "direct" },
-      { "rule_set": ["geosite-cn"], "outbound": "direct" },
-      { "rule_set": ["geoip-cn"], "outbound": "direct" }
+      {
+        "action": "sniff"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "geosite-cn"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "geoip-cn"
+        ],
+        "outbound": "direct"
+      }
     ],
     "rule_set": [
       {
-        "type": "remote", "tag": "geosite-cn", "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-        "download_detour": "direct", "update_interval": "24h"
+        "type": "local",
+        "tag": "geosite-cn",
+        "format": "binary",
+        "path": "/etc/sing-box/rules/geosite-cn.srs"
       },
       {
-        "type": "remote", "tag": "geoip-cn", "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-        "download_detour": "direct", "update_interval": "24h"
+        "type": "local",
+        "tag": "geoip-cn",
+        "format": "binary",
+        "path": "/etc/sing-box/rules/geoip-cn.srs"
       }
     ],
     "final": "hy2-out",
     "auto_detect_interface": true
   },
   "experimental": {
-    "cache_file": { "enabled": true }
+    "cache_file": {
+      "enabled": true
+    }
   }
 }

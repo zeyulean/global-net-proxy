@@ -9,6 +9,7 @@ RUN apk add --no-cache hostapd dnsmasq iptables iproute2 bash curl \
 COPY sing-box /usr/local/bin/sing-box
 RUN chmod +x /usr/local/bin/sing-box
 
+COPY rules/ /etc/sing-box/rules/
 COPY hostapd.conf /etc/hostapd/hostapd.conf
 COPY dnsmasq.conf /etc/dnsmasq/dnsmasq.conf
 COPY sing-box-tproxy.json.template /etc/sing-box/config.template
