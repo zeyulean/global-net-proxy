@@ -1,7 +1,25 @@
 # 绿联 AX900 (AIC8800D80) 修复全记录 — 2026-08-14/15
 
 > 会话：让绿联 AX900 USB 网卡在 aipro（OrangePi AIpro 20T，昇腾 Atlas 200I A2，
-> kernel 5.10.0+ aarch64）上工作 → 做无线路由。结论：**hiusbc 平台缺陷，不可修**。
+> kernel 5.10.0+ aarch64）上工作 → 做无线路由。
+>
+> ## ✅ 2026-08-15 14:00 终局翻案：**已修复，wlan1 可用**
+>
+> 之前的"hiusbc 平台缺陷，不可修"结论**被推翻**。E1-E21/R1-R4 全部崩溃的真实根因：
+> 当时加载的 cfg80211.ko 是主线源码编的，**init 被静默跳过**（struct module 错位，
+> 见 [06-struct-module-mismatch.md](06-struct-module-mismatch.md)）→ fdrv probe 走到
+> cfg80211 交互时碰未初始化的链表/锁 → 无 Oops 的随机 lockup。printk 打点改变时序
+> = 内存损坏型崩溃的典型表现，被误读为"USB 竞态"。
+>
+> 修复（健康 cfg80211 环境下，E22）：
+> 1. ugreen V1.4 树（含全部补丁，ID 表已有 368b:8d88）
+> 2. **`CONFIG_USB_BT=n` 改回 `=y`**（aic8800_fdrv/Makefile:68）——当年为躲崩溃关掉的
+>    "三通道配置"其实是正确配置：D80/D81 复合设备 = 3 interface（2×BT e0/01/01 +
+>    1×WLAN ff/ff/ff，bDeviceClass=0xEF）；BT=n 时 class 检查拒 239、接口数检查按 1 走
+> 3. 重编（KBUILD_EXTRA_SYMBOLS 指向 aic_load_fw 的 Module.symvers）→ insmod 即通
+>
+> 结果：wlan1 (managed, wiphy 1) 注册，扫描可见多个 AP，整机稳定。
+> 遗留小瑕疵：dmesg 每 ~5s 一条 `cfm_wait id=1000` 轮询日志（功能正常，待降噪）。
 
 ## 一、硬件与 USB 拓扑（实测确认）
 

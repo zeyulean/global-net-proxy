@@ -10,6 +10,13 @@
 | cfg80211.ko | b3ce310d67ba6e873e447fa357f93b3a | openEuler-22.03-LTS-SP1 同源编译 | /lib/modules/5.10.0+/kernel/net/wireless/cfg80211.ko |
 | mac80211.ko | 0b77c58831d6c8403814e2bac3aef48f | 同上 | /lib/modules/5.10.0+/kernel/net/mac80211/mac80211.ko |
 | 8821cu.ko | 2168a29a3c75589dd5a0a4b845b2a736 | **原厂 DKMS 5.12.0.4 备份**（未改动） | /lib/modules/5.10.0+/8821cu.ko |
+| aic8800/aic8800_fdrv.ko | 2396b6f4c2bc358f19bda87102158583 | ugreen V1.4 树全补丁 + **CONFIG_USB_BT=y**（E22） | /lib/modules/5.10.0+/kernel/drivers/net/wireless/aic8800/aic8800_fdrv.ko |
+| aic8800/aic_load_fw.ko | c6aa624854aaa6d35be1f5dd0d954f47 | 同树（含 8d80 bootrom 支持） | /lib/modules/5.10.0+/kernel/drivers/net/wireless/aic8800/aic_load_fw.ko |
+
+绿联 AX900 加载序列（bootrom a69c:8d80 → udev 弹出已自动 →）：
+`insmod aic_load_fw.ko`（下载固件，设备变 368b:8d88）→ `insmod aic8800_fdrv.ko` → **wlan1** 出现。
+源码树在 aipro `/mnt/disk/lwboy/projects/drivers/aic8800-ugreen`（git 有全部实验记录）。
+blacklist（/etc/modprobe.d/aic8800-blacklist.conf）保留——开机不自动加载，需要时手动。
 
 vermagic 均为 `5.10.0+ SMP mod_unload aarch64`（仅适用于 OrangePi AIpro 20T 当前内核）。
 
