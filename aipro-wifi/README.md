@@ -14,8 +14,9 @@
 | 同源 cfg80211/mac80211 | ✅ | openEuler-22.03-LTS-SP1 源码编译，init 正常执行，`5.10.0+` vermagic |
 | 原厂 8821cu 驱动 | ✅ | **它一直是对的**（c820 实为 8821CU 硅片，chip_id=0x09 非错读）；此前 lockup 全因坏 cfg80211 |
 | wlan0 客户端 | ✅ | 连接 XinYuan，-57dBm，200Mbps tx，ping 网关 0% 丢包 |
-| AP 模式 + gnp 出口 | ⏭ 下一步 | hostapd.conf 已备（/etc/hostapd/），8821cu 支持 AP |
-| 开机自启 | ⏭ 下一步 | modules-load.d + depmod（防 rfkill.ko 残留陷阱）|
+| 绿联 AX900 (wlan1) | ✅ | CONFIG_USB_BT=y 三接口重编，WiFi6 双频，扫描正常 |
+| **无线路由 docker** | ✅ | [router-docker/](router-docker/README.md)：AP+DHCP+透明代理(hy2/QUIC 出海)，Mac 实测 google 204/0.3s |
+| 开机自启 | ✅ | modules-load.d（wlan0 栈）；路由容器 `--restart unless-stopped`（wlan1 驱动需手动 aic_load.sh）|
 
 ## 工作配方（复现）
 

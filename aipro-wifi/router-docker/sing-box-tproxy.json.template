@@ -1,0 +1,47 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "dns": {
+    "servers": [
+      { "tag": "remote", "address": "8.8.8.8", "detour": "hy2-out" },
+      { "tag": "remote2", "address": "1.1.1.1", "detour": "hy2-out" }
+    ],
+    "final": "remote",
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [
+    {
+      "type": "tproxy",
+      "tag": "tproxy-tcp",
+      "listen": "0.0.0.0",
+      "listen_port": 7893,
+      "network": "tcp"
+    },
+    {
+      "type": "tproxy",
+      "tag": "tproxy-udp",
+      "listen": "0.0.0.0",
+      "listen_port": 7893,
+      "network": "udp"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-out",
+      "server": "8.209.203.17",
+      "server_port": 443,
+      "password": "__HY2_PASSWORD__",
+      "tls": { "enabled": true, "insecure": true }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "rules": [
+      { "action": "sniff" },
+      { "protocol": "dns", "action": "hijack-dns" },
+      { "ip_is_private": true, "outbound": "direct" }
+    ],
+    "final": "hy2-out",
+    "auto_detect_interface": true
+  }
+}
