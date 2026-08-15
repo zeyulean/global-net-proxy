@@ -1,0 +1,141 @@
+From 1695f974482d4c043ca9b936a328622d1a488280 Mon Sep 17 00:00:00 2001
+From: zcode <zcode@local>
+Date: Sat, 15 Aug 2026 10:43:22 +0800
+Subject: [PATCH 1/4] E1: add USB id 0xC820 (RTL8812BU) to RTL8822B block
+
+---
+ os_dep/linux/usb_intf.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/os_dep/linux/usb_intf.c b/os_dep/linux/usb_intf.c
+index 78b8885..5405e58 100644
+--- a/os_dep/linux/usb_intf.c
++++ b/os_dep/linux/usb_intf.c
+@@ -242,6 +242,7 @@ static struct usb_device_id rtw_usb_id_tbl[] = {
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB812, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID for USB Single-function, WiFi only */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB81A, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB82C, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID for USB multi-function */
++t{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xC820, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* 8812BU C820 patched */
+ 	/*=== Customer ID ===*/
+ 	{USB_DEVICE_AND_INTERFACE_INFO(0x04CA, 0x8602, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* LiteOn */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(0x056E, 0x4011, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Elecom */
+-- 
+2.34.1
+
+
+From ed3d6ecdafea58ed1a252c4463a0db9a1e522f35 Mon Sep 17 00:00:00 2001
+From: zcode <zcode@local>
+Date: Sat, 15 Aug 2026 10:43:27 +0800
+Subject: [PATCH 2/4] fix indent
+
+---
+ os_dep/linux/usb_intf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/os_dep/linux/usb_intf.c b/os_dep/linux/usb_intf.c
+index 5405e58..1dc012b 100644
+--- a/os_dep/linux/usb_intf.c
++++ b/os_dep/linux/usb_intf.c
+@@ -242,7 +242,7 @@ static struct usb_device_id rtw_usb_id_tbl[] = {
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB812, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID for USB Single-function, WiFi only */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB81A, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB82C, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID for USB multi-function */
+-t{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xC820, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* 8812BU C820 patched */
++	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xC820, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* 8812BU C820 patched */
+ 	/*=== Customer ID ===*/
+ 	{USB_DEVICE_AND_INTERFACE_INFO(0x04CA, 0x8602, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* LiteOn */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(0x056E, 0x4011, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Elecom */
+-- 
+2.34.1
+
+
+From 4da32820a7f1354ed192561150b4c62ad208029c Mon Sep 17 00:00:00 2001
+From: zcode <zcode@local>
+Date: Sat, 15 Aug 2026 11:03:58 +0800
+Subject: [PATCH 3/4] E2: log raw chip_id, force 8822B for c820, guard NULL api
+ slots
+
+---
+ hal/hal_halmac.c        |  8 ++++++++
+ hal/halmac/halmac_api.c | 15 +++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/hal/hal_halmac.c b/hal/hal_halmac.c
+index aa1bbf9..9e4f863 100644
+--- a/hal/hal_halmac.c
++++ b/hal/hal_halmac.c
+@@ -1257,6 +1257,14 @@ int rtw_halmac_init_adapter(struct dvobj_priv *d, struct halmac_platform_api *pf
+ 
+ 	dvobj_set_halmac(d, halmac);
+ 
++	/* AIPRO-E2: guard against NULL api slots (incomplete per-chip mount).
++	 * Without this a NULL slot ends in pc=0x0 oops via blr. */
++	if (!api || !api->halmac_interface_integration_tuning || !api->halmac_phy_cfg) {
++		printk(KERN_ALERT "AIPRO8822BU: halmac api slots NULL, abort init\n");
++		err = -1;
++		goto deinit;
++	}
++
+ 	status = api->halmac_interface_integration_tuning(halmac);
+ 	if (status != HALMAC_RET_SUCCESS) {
+ 		RTW_ERR("%s: halmac_interface_integration_tuning fail!(status=%d)\n", __FUNCTION__, status);
+diff --git a/hal/halmac/halmac_api.c b/hal/halmac/halmac_api.c
+index d6f531d..56b6139 100644
+--- a/hal/halmac/halmac_api.c
++++ b/hal/halmac/halmac_api.c
+@@ -522,6 +522,21 @@ get_chip_info(void *drv_adapter, struct halmac_platform_api *pltfm_api,
+ 
+ 	adapter->chip_ver = (enum halmac_chip_ver)chip_ver;
+ 
++	/* AIPRO-E2: dump raw chip id/ver before mapping */
++	printk(KERN_ALERT "AIPRO8822BU: %s raw chip_id=0x%02x chip_ver=0x%02x intf=%d\n",
++	       __func__, chip_id, chip_ver, adapter->intf);
++
++	/* AIPRO-E2: c820 = RTL8812BU (8822B silicon). Any other value here is a
++	 * bad USB register read; wrong values in {8821C,8822C,8812F} would pass
++	 * the series gate in halmac_init_adapter() but skip mount_api_8822b()
++	 * (those per-chip branches compile empty), leaving NULL api slots and a
++	 * pc=0x0 oops at rtw_halmac_init_adapter. Force 8822B. */
++	if (chip_id != CHIP_ID_HW_DEF_8822B) {
++		printk(KERN_ALERT "AIPRO8822BU: force chip_id 0x%02x -> 0x0A (8822B)\n",
++		       chip_id);
++		chip_id = CHIP_ID_HW_DEF_8822B;
++	}
++
+ 	if (chip_id == CHIP_ID_HW_DEF_8822B) {
+ 		adapter->chip_id = HALMAC_CHIP_ID_8822B;
+ 	} else if (chip_id == CHIP_ID_HW_DEF_8821C) {
+-- 
+2.34.1
+
+
+From 2cf9ded5d0efc8ae6aa62d3786dc9efa90df2167 Mon Sep 17 00:00:00 2001
+From: zcode <zcode@local>
+Date: Sat, 15 Aug 2026 13:22:48 +0800
+Subject: [PATCH 4/4] =?UTF-8?q?docs:=20conclusion=20=E2=80=94=20this=20car?=
+ =?UTF-8?q?d=20is=208821CU=20silicon;=2088x2bu=20line=20retired?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ CONCLUSION.md | 7 +++++++
+ 1 file changed, 7 insertions(+)
+ create mode 100644 CONCLUSION.md
+
+diff --git a/CONCLUSION.md b/CONCLUSION.md
+new file mode 100644
+index 0000000..15581de
+--- /dev/null
++++ b/CONCLUSION.md
+@@ -0,0 +1,7 @@
++# 结论存档 2026-08-15
++
++本卡 c820 实为 8821CU 硅片（chip_id=0x09 为真实读数，非错读）。
++E2 的强制 chip_id=8822B 补丁是误诊——8822B 固件灌 8821C 导致 dlfw failed。
++本仓库整条 88x2bu 线为弯路，wlan 已由原厂 8821cu.ko + openEuler 同源 cfg80211/mac80211 修复。
++E1 的 c820 ID patch 与 E3 反汇编技术仍有参考价值。
++勿再向本卡加载 88x2bu。
+-- 
+2.34.1
+

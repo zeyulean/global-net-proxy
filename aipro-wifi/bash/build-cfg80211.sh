@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ⚠️ 已废弃（2026-08-15）：主线源码编的模块 struct module 错位，init 被静默跳过！
+# 唯一正确方式用 build-samesource.sh（openEuler 同源）。本文件仅存档历史流程。
 # build-cfg80211.sh — 在 aipro 上补编 cfg80211.ko + mac80211.ko
 #
 # 背景：OrangePi AIpro 5.10.0+ 内核 CONFIG_CFG80211=m/MAC80211=m，但出厂漏装 .ko。
