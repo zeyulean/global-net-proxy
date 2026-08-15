@@ -1,3 +1,7 @@
 [submodule "vendor/sing-box"]
 	path = vendor/sing-box
 	url = https://github.com/SagerNet/sing-box.git
+[submodule "aipro-wifi/resources"]
+	path = aipro-wifi/resources
+	url = https://github.com/zeyulean/global-net-proxy.git
+	branch = aipro-resources

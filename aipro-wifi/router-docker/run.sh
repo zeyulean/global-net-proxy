@@ -12,8 +12,17 @@ import json
 c=json.load(open('/mnt/disk/lwboy/.local/share/sing-box/config.json'))
 print(next(o['password'] for o in c['outbounds'] if o['type']=='hysteria2'))")
 
-# sing-box 二进制进构建上下文（与 host gnp 同源）
-cp -f /mnt/disk/lwboy/.local/share/sing-box/sing-box ./sing-box
+# sing-box 二进制进构建上下文：
+#   优先 submodule aipro-wifi/resources（分支 aipro-resources，离线可用）
+#   回退 aipro 宿主 gnp 部署路径
+if [ -x ./resources/sing-box/sing-box ]; then
+  cp -f ./resources/sing-box/sing-box ./sing-box
+elif [ -x /mnt/disk/lwboy/.local/share/sing-box/sing-box ]; then
+  cp -f /mnt/disk/lwboy/.local/share/sing-box/sing-box ./sing-box
+else
+  echo "缺少 sing-box 二进制：请先 git submodule update --init ../resources" >&2
+  exit 1
+fi
 
 echo "=== 1/4 NM 交接 wlan1（持久 unmanaged）==="
 nmcli device set wlan1 managed no 2>/dev/null || true

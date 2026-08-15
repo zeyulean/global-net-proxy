@@ -26,6 +26,16 @@ sudo bash /mnt/disk/lwboy/projects/aipro-wifi-router/run.sh
 # run.sh 自动：取宿主 gnp hy2 密码 → NM 交接 wlan1 → docker build → run
 ```
 
+### 资源依赖（sing-box 二进制 / aic8800 源码）
+
+存于**子模块 `aipro-wifi/resources`**（同仓库分支 `aipro-resources`，
+含 sing-box 1.12.3 linux-arm64 预编译 + aic8800-ugreen E22 源码）：
+
+```bash
+git submodule update --init aipro-wifi/resources
+# sing-box 来源优先级：resources（离线） > aipro 宿主 gnp 部署路径
+```
+
 ## 验收结果（2026-08-15，Mac 实连实测）
 
 | 测试 | 结果 |
