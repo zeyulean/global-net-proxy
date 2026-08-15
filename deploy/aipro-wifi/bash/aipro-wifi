@@ -2,9 +2,9 @@
 # aipro-wifi — AP 一键开关（aipro 上，装于 ~/.local/bin/）
 #
 # 用法:
-#   aipro-wifi on       # 开 AP（模块缺失时自动补载；docker 拉起容器）
-#   aipro-wifi off      # 关 AP（停容器 + 尽力卸载射频模块）
-#   aipro-wifi status   # 状态总览
+#   aipro-wifi on/off/status
+#   aipro-wifi gnpon    # AP 出海走透明代理(默认)
+#   aipro-wifi gnpoff   # AP 走原通道 NAT 直连(分流不稳时应急)
 #
 # 设计: 开机链已全自动(udev+modalias), 日常开关只需 docker(lwboy 免密);
 #       模块操作需 root — 有免密 sudo 或以 root 运行时自动补, 否则提示。
@@ -37,6 +37,28 @@ ensure_modules() {
   fi
 }
 
+# 以指定模式重建容器 (proxy|direct)
+recreate() {
+  local mode="$1"
+  ensure_modules || true
+  ip link show wlan1 &>/dev/null || { echo "✗ wlan1 不存在"; exit 1; }
+  local pass
+  pass=$(python3 -c "import json;c=json.load(open('/mnt/disk/lwboy/.local/share/sing-box/config.json'));print(next(o['password'] for o in c['outbounds'] if o['type']=='hysteria2'))" 2>/dev/null || echo unused)
+  docker rm -f "$CONTAINER" >/dev/null 2>&1
+  docker run -d --name "$CONTAINER" --network host --privileged \
+    --restart unless-stopped \
+    -e ROUTER_MODE="$mode" -e HY2_PASSWORD="$pass" -e WIFI_IFACE=wlan1 \
+    aipro-wifi-router:latest >/dev/null
+  for i in $(seq 1 15); do
+    iw dev wlan1 info 2>/dev/null | grep -q "type AP" && break; sleep 1
+  done
+  if iw dev wlan1 info 2>/dev/null | grep -q "type AP"; then
+    echo "✅ AP 已就绪 ($mode 模式): $(iw dev wlan1 info | awk '/ssid/{print $2}')"
+  else
+    echo "✗ 未就绪: docker logs $CONTAINER"; exit 1
+  fi
+}
+
 case "$CMD" in
   on)
     echo "== aipro-wifi ON =="
@@ -63,15 +85,26 @@ case "$CMD" in
     as_root && run_root rmmod aic8800_fdrv aic_load_fw 2>/dev/null \
       && echo "  射频模块已卸载" || echo "  (模块保持加载, 仅停 AP)"
     ;;
+  gnpon)
+    echo "== AP 出海代理模式 (透明代理 hy2/QUIC) =="
+    recreate proxy
+    ;;
+  gnpoff)
+    echo "== AP 原通道模式 (NAT 直连, 不走代理) =="
+    recreate direct
+    ;;
   status)
     echo "== aipro-wifi 状态 =="
     printf "  aic 模块: %s\n" "$(lsmod | grep -q '^aic8800_fdrv' && echo 已加载 || echo 未加载)"
     printf "  wlan1(AP): %s\n" "$(iw dev wlan1 info 2>/dev/null | grep -E 'ssid' | awk '{print $2}' || echo 不存在)"
     printf "  容器: %s\n" "$(docker ps -a --filter name=$CONTAINER --format '{{.Status}}')"
+    printf "  出口模式: %s\n" "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $CONTAINER 2>/dev/null | grep ROUTER_MODE | cut -d= -f2 || echo proxy)"
     printf "  客户端: %s\n" "$(iw dev wlan1 station dump 2>/dev/null | grep -c Station) 个"
     ;;
   *)
-    echo "用法: aipro-wifi {on|off|status}"
+    echo "用法: aipro-wifi {on|off|status|gnpon|gnpoff}"
+    echo "  gnpon   AP 客户端走透明代理出海(默认)"
+    echo "  gnpoff  AP 客户端走原通道 NAT 直连(分流不稳时应急)"
     exit 1
     ;;
 esac

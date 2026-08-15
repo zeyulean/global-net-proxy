@@ -15,6 +15,29 @@ ip addr add "${AP_IP}/24" dev "$IFACE"
 echo "[entrypoint] sysctl"
 sysctl -w net.ipv4.ip_forward=1
 
+MODE="${ROUTER_MODE:-proxy}"
+echo "[entrypoint] 模式: $MODE"
+
+if [ "$MODE" = "direct" ]; then
+    # ── 原通道模式 (gnpoff): NAT 直连, 不起 sing-box/tproxy ──
+    WAN_IF=$(ip route get 223.5.5.5 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    [ -z "$WAN_IF" ] && WAN_IF=eth0
+    echo "[entrypoint] direct: NAT 192.168.88.0/24 → $WAN_IF"
+    iptables -t nat -C POSTROUTING -s 192.168.88.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null ||     iptables -t nat -A POSTROUTING -s 192.168.88.0/24 -o "$WAN_IF" -j MASQUERADE
+    cleanup() {
+        iptables -t nat -D POSTROUTING -s 192.168.88.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null || true
+        kill $(jobs -p) 2>/dev/null || true
+        exit 0
+    }
+    trap cleanup SIGTERM SIGINT
+    echo "[entrypoint] direct: dnsmasq (DHCP + DNS 223.5.5.5)"
+    dnsmasq --conf-file=/etc/dnsmasq/dnsmasq.conf --port=53 --server=223.5.5.5 --keep-in-foreground &
+    sleep 1
+    echo "[entrypoint] direct: hostapd"
+    exec hostapd /etc/hostapd/hostapd.conf
+fi
+
+# ── 代理模式 (gnpon, 默认) ──
 echo "[entrypoint] 渲染 sing-box 配置"
 sed "s/__HY2_PASSWORD__/${HY2_PASSWORD:?need HY2_PASSWORD env}/" \
     /etc/sing-box/config.template > /etc/sing-box/config.json
