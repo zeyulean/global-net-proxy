@@ -127,13 +127,24 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 
 > 密码需要安全传输，不影响 server 安全性。密码池存在 gitee 私有仓库。
 
-## 部署矩阵（2026-08-15）
+## 部署矩阵（2026-08-15 实体部署已收敛）
 
-| 节点 | 角色 | gnp-client | 状态 |
-|---|---|---|---|
-| Mac (本机) | client, launchd | `~/.local/bin/gnp-client` → repo `bin/` | ✅ 运行中 :1080 |
-| aipro (192.168.1.2) | client + **无线路由** (aipro-wifi/) | `~/.local/bin/gnp-client` | ✅ :1080 + AP ssid=aipro |
-| lwtop (海外 8.209.203.17) | server (gnp-hy2) | — | ✅ QUIC 443 |
+| 节点 | 角色 | 二进制（实体拷贝） | 服务 | 实例 |
+|---|---|---|---|---|
+| Mac | client | `~/.local/bin/gnp-client` | launchd com.gnp.sing-box | 单一 ✓ |
+| aipro | client + 无线路由 | `~/.local/bin/gnp-client` | systemd gnp-proxy | 单一 ✓（路由容器内 sing-box 为独立角色） |
+| lwtop | server | `/usr/local/bin/gnp-server` | systemd gnp-hy2 | 单一 ✓ (UDP 443) |
+
+### 部署规范（必须遵守）
+
+1. **仓库与部署职责分离**：repo 只管源码/文档；部署物必须是**实体拷贝**
+   （`cp` 到 `~/.local/bin/`、`/usr/local/bin/`），**禁止 symlink 指向仓库**
+   ——仓库移动/清理会瞬间打断生产。
+2. **单实例纪律**：更新 = 停服务 → 拷贝 → 启动 → `pgrep -c` 核对唯一；
+   手动测试跑过 binary 后必须确认没有逃逸进程占端口（aipro 曾因此 crash-loop 111 次）。
+3. **跨机传二进制先 `file` 核架构**（Mac arm64 Mach-O ≠ Linux x86_64 ELF，
+   2026-08-15 曾差点把 Mach-O 覆盖到 lwtop）。远端有 cargo 时优先远端本地构建。
+4. systemd 服务带 `cache_file` 时必须给**绝对路径**（默认 CWD=/ 不可写 → 启动即死）。
 
 > 全线 CN 分流：geosite/geoip-cn 直连，国外走 hy2/QUIC。wg 时代代码已清
 > （`tunnel` 为主命令，`wg` 保留别名；运行配置纯 hysteria2 outbound）。
