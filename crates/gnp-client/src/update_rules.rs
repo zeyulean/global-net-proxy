@@ -18,15 +18,8 @@ pub fn cmd_update() -> Result<()> {
     println!("触发规则集更新...");
 
     // 重启 sing-box (remote rule-set 在启动时拉取)
-    let running = Command::new("pgrep")
-        .args(["-f", "sing-box run"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if running {
-        // 杀掉 sing-box
-        let _ = Command::new("pkill").args(["-f", "sing-box run"]).status();
+    if sb_process_running() {
+        kill_sb_process();
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
@@ -42,11 +35,7 @@ pub fn cmd_update() -> Result<()> {
 
 /// check: 检查 sing-box 是否运行, 挂了就拉起来
 pub fn cmd_check() -> Result<()> {
-    let running = Command::new("pgrep")
-        .args(["-f", "sing-box run"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let running = sb_process_running();
 
     if running {
         println!("sing-box 运行中 ✓");
@@ -112,4 +101,34 @@ pub fn cmd_install_cron() -> Result<()> {
     println!("cron 已安装: {}", cron_line);
     println!("每天 04:00 检查 sing-box 常驻 + 规则集更新");
     Ok(())
+}
+
+/// sing-box 进程是否在跑 (跨平台)
+fn sb_process_running() -> bool {
+    if cfg!(windows) {
+        Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq sing-box.exe", "/NH"])
+            .output()
+            .map(|o| {
+                format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+                    .to_lowercase()
+                    .contains("sing-box.exe")
+            })
+            .unwrap_or(false)
+    } else {
+        Command::new("pgrep")
+            .args(["-f", "sing-box run"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// 杀掉 sing-box 进程 (跨平台)
+fn kill_sb_process() {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill").args(["/F", "/IM", "sing-box.exe"]).status();
+    } else {
+        let _ = Command::new("pkill").args(["-f", "sing-box run"]).status();
+    }
 }

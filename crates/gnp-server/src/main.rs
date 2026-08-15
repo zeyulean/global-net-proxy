@@ -208,7 +208,18 @@ fn install_singbox() -> Result<()> {
     std::fs::copy(&found, SB_BIN).context("复制 sing-box 失败")?;
     let _ = std::fs::set_permissions(
         SB_BIN,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        {
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::PermissionsExt::from_mode(0o755)
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::metadata(SB_BIN)
+                    .context("读取 sing-box 元数据失败")?
+                    .permissions()
+            }
+        },
     );
     let _ = std::fs::remove_file(&tmp);
     println!("✅ sing-box 安装完成: {}", SB_BIN);
@@ -529,8 +540,11 @@ fn cmd_pregen(count: u32) -> Result<()> {
         let out_path = PathBuf::from(PENDING_DIR).join(format!("{}.json", id));
         std::fs::write(&out_path, serde_json::to_string_pretty(&user_json)?)
             .context("写用户 json 失败")?;
-        std::fs::set_permissions(&out_path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
-            .ok();
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(
+            &out_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        );
         println!("  {} → {}", id, out_path.display());
     }
     println!("\n✅ 生成 {} 个用户, 存在 {}", count, PENDING_DIR);

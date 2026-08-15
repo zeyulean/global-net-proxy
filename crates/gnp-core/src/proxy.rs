@@ -29,6 +29,7 @@ pub fn enable() -> Result<()> {
     match p {
         platform::Platform::MacOs => enable_macos(),
         platform::Platform::Linux => enable_linux(),
+        platform::Platform::Windows => enable_windows(),
         _ => unreachable!(),
     }
 }
@@ -42,6 +43,7 @@ pub fn disable() -> Result<()> {
     match p {
         platform::Platform::MacOs => disable_macos(),
         platform::Platform::Linux => disable_linux(),
+        platform::Platform::Windows => disable_windows(),
         _ => unreachable!(),
     }
 }
@@ -55,6 +57,7 @@ pub fn status() -> Result<()> {
     match p {
         platform::Platform::MacOs => status_macos(),
         platform::Platform::Linux => status_linux(),
+        platform::Platform::Windows => status_windows(),
         _ => unreachable!(),
     }
 }
@@ -369,5 +372,86 @@ fn status_linux() -> Result<()> {
         println!("  状态: 已关闭 ⬛");
     }
 
+    Ok(())
+}
+
+// ===========================================================================
+//  Windows 实现 (注册表 WinINET 代理 + InternetSetOption 刷新)
+// ===========================================================================
+
+/// 以 -EncodedCommand 运行 PowerShell 脚本 (UTF-16LE base64, 免引号转义地狱)
+fn run_ps(script: &str) -> Result<String> {
+    let b64 = crate::platform::ps_encode(script);
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &b64])
+        .output()
+        .context("powershell 执行失败")?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if !out.status.success() {
+        bail!("powershell 脚本失败: {}", text.trim());
+    }
+    Ok(text)
+}
+
+/// WinINET 刷新片段 (让浏览器等立即感知代理变化, 无需重新登录)
+const PS_REFRESH: &str = r#"
+Add-Type -MemberDefinition '[DllImport("wininet.dll", SetLastError=true)] public static extern bool InternetSetOption(IntPtr h, int o, IntPtr b, int l);' -Name N -Namespace W
+[W.W]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+[W.W]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+"#;
+
+/// Windows 开启系统代理 (当前用户, 注册表 + 刷新)
+fn enable_windows() -> Result<()> {
+    let script = format!(
+        r#"$reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty -Path $reg -Name ProxyEnable -Value 1
+Set-ItemProperty -Path $reg -Name ProxyServer -Value '{h}:{p}'
+Set-ItemProperty -Path $reg -Name ProxyOverride -Value 'localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.30.*;172.31.*;192.168.*;<local>'
+{refresh}
+Write-Output 'OK'
+"#,
+        h = PROXY_HOST,
+        p = PROXY_PORT,
+        refresh = PS_REFRESH
+    );
+    run_ps(&script)?;
+    println!("✅ Windows 系统代理已开启 ({}:{} → WinINET)", PROXY_HOST, PROXY_PORT);
+    println!("   浏览器/系统应用即时生效; 需要走代理的 CLI 工具请设 HTTP_PROXY 环境变量");
+    Ok(())
+}
+
+/// Windows 关闭系统代理
+fn disable_windows() -> Result<()> {
+    let script = format!(
+        r#"$reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty -Path $reg -Name ProxyEnable -Value 0
+{refresh}
+Write-Output 'OK'
+"#,
+        refresh = PS_REFRESH
+    );
+    run_ps(&script)?;
+    println!("✅ Windows 系统代理已关闭");
+    Ok(())
+}
+
+/// Windows 查看代理状态
+fn status_windows() -> Result<()> {
+    let script = r#"$reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+$v = Get-ItemProperty -Path $reg
+Write-Output ("ProxyEnable: " + $v.ProxyEnable)
+Write-Output ("ProxyServer: " + $v.ProxyServer)
+"#;
+    let out = run_ps(script)?;
+    println!("== Windows 系统代理状态 (WinINET) ==\n");
+    for line in out.lines().filter(|l| l.contains(':')) {
+        let enabled = line.contains("ProxyEnable: 1");
+        let mark = if enabled { "✅ 已开启" } else { "⬛ 已关闭" };
+        println!("  {} {}", line.trim(), if line.starts_with("ProxyEnable") { mark } else { "" });
+    }
     Ok(())
 }

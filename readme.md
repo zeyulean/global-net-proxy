@@ -134,6 +134,17 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 | Mac | client | `~/.local/bin/gnp-client` | launchd com.gnp.sing-box | 单一 ✓ |
 | aipro | client + 无线路由 | `~/.local/bin/gnp-client` | systemd gnp-proxy | 单一 ✓（路由容器内 sing-box 为独立角色） |
 | lwtop | server | `/usr/local/bin/gnp-server` | systemd gnp-hy2 | 单一 ✓ (UDP 443) |
+| Windows | client ✨ | `%USERPROFILE%\.local\bin\gnp-client.exe` | 计划任务 gnp-singbox (ONLOGON) | 2026-08-15 新增 |
+
+### Windows 支持（2026-08-15）
+
+- 命令面与 mac/linux 一致：install/start/stop/status/config/test/tunnel/proxy
+- 服务：schtasks 计划任务 `gnp-singbox`（当前用户登录自启，**无需管理员**）
+- 系统代理：写 HKCU WinINET 注册表 + InternetSetOption 刷新（浏览器即时生效）
+- 数据目录同为 `~\.local\share\sing-box\`（三端路径统一）
+- cleanup/recover 不适用（无 tun 路由风险），会给出说明
+- 交叉编译：`rustup target add x86_64-pc-windows-gnu && brew install mingw-w64 &&
+  cargo build -p gnp-client --release --target x86_64-pc-windows-gnu`
 
 ### 部署规范（必须遵守）
 

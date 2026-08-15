@@ -124,6 +124,7 @@ pub fn start(platform: Platform) -> Result<()> {
     match platform {
         Platform::MacOs => start_macos(),
         Platform::Linux => start_linux(),
+        Platform::Windows => start_windows(),
         _ => bail!("不支持的平台"),
     }
 }
@@ -133,6 +134,7 @@ pub fn stop(platform: Platform) -> Result<()> {
     match platform {
         Platform::MacOs => stop_macos(),
         Platform::Linux => stop_linux(),
+        Platform::Windows => stop_windows(),
         _ => bail!("不支持的平台"),
     }
 }
@@ -142,6 +144,7 @@ pub fn is_running(platform: Platform) -> Result<bool> {
     match platform {
         Platform::MacOs => is_running_macos(),
         Platform::Linux => is_running_linux(),
+        Platform::Windows => is_running_windows(),
         _ => bail!("不支持的平台"),
     }
 }
@@ -216,4 +219,85 @@ fn is_running_linux() -> Result<bool> {
         .context("systemctl is-active 失败")?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(stdout == "active")
+}
+// --- Windows (schtasks 计划任务 + taskkill/tasklist) ---
+
+/// 计划任务名 (开机自启, SYSTEM 权限)
+const WIN_TASK: &str = "gnp-singbox";
+
+/// 计划任务是否存在
+fn win_task_exists() -> bool {
+    Command::new("schtasks")
+        .args(["/Query", "/TN", WIN_TASK])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// 创建计划任务 (当前用户登录时自启; 无需管理员权限)
+///
+/// 注: 不用 /RU SYSTEM —— 那需要管理员权限创建; 桌面 Windows 场景
+/// ONLOGON(当前用户) 已够用, 且代理写 HKCU 也与用户会话一致。
+fn win_task_create() -> Result<()> {
+    let tr = format!(
+        "\"{}\" run -c \"{}\"",
+        sb_bin().display(),
+        sb_config().display()
+    );
+    let out = Command::new("schtasks")
+        .args(["/Create", "/TN", WIN_TASK, "/SC", "ONLOGON", "/TR", &tr, "/F"])
+        .output()
+        .context("schtasks /Create 失败")?;
+    if !out.status.success() {
+        bail!(
+            "创建计划任务失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Windows 启动: 确保任务存在 → schtasks /Run → 轮询进程
+fn start_windows() -> Result<()> {
+    if !win_task_exists() {
+        win_task_create()?;
+        println!("✅ 已创建计划任务 {} (开机自启)", WIN_TASK);
+    }
+    Command::new("schtasks")
+        .args(["/Run", "/TN", WIN_TASK])
+        .output()
+        .context("schtasks /Run 失败")?;
+    // 轮询等待进程出现 (最多 ~8s)
+    for _ in 0..16 {
+        if is_running_windows()? {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    bail!("sing-box 启动失败 (计划任务已触发但进程未出现, 用 gnp-client status 检查配置)");
+}
+
+/// Windows 停止: 结束任务 + 杀进程
+fn stop_windows() -> Result<()> {
+    let _ = Command::new("schtasks")
+        .args(["/End", "/TN", WIN_TASK])
+        .output();
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "sing-box.exe"])
+        .output();
+    Ok(())
+}
+
+/// Windows 进程检测
+fn is_running_windows() -> Result<bool> {
+    let out = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq sing-box.exe", "/NH"])
+        .output()
+        .context("tasklist 失败")?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(text.to_lowercase().contains("sing-box.exe"))
 }

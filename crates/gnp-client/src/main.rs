@@ -283,8 +283,23 @@ fn main() -> Result<()> {
                 update_rules::cmd_check()
             }
         }
-        Commands::Cleanup => cleanup::run(),
-        Commands::Recover => recover::run(),
+        Commands::Cleanup => {
+            if cfg!(windows) {
+                println!("ℹ️  cleanup 针对 macOS/Linux 的 tun 路由事故; Windows 上 sing-box 只监听端口,");
+                println!("   无路由劫持风险。如需卸载: gnp-client stop 后删除 %USERPROFILE%\\.local\\share\\sing-box");
+                Ok(())
+            } else {
+                cleanup::run()
+            }
+        }
+        Commands::Recover => {
+            if cfg!(windows) {
+                println!("ℹ️  recover 针对 macOS/Linux 的 tun 路由事故恢复; Windows 无此风险, 无需使用。");
+                Ok(())
+            } else {
+                recover::run()
+            }
+        }
         Commands::Proxy { on, off, status } => cmd_proxy(on, off, status),
     }
 }
@@ -531,14 +546,16 @@ fn cmd_proxy(on: bool, off: bool, status: bool) -> Result<()> {
     Ok(())
 }
 
-/// 检查端口是否监听
+/// 检查端口是否监听 (跨平台: 直接 TCP 连接探测, 不依赖 lsof/netstat)
 fn check_port(port: u16) -> bool {
-    let out = std::process::Command::new("lsof")
-        .args(["-i", &format!(":{}", port)])
-        .output();
-    match out {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
+    use std::net::{TcpStream, ToSocketAddrs};
+    let addr = format!("127.0.0.1:{}", port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut it| it.next());
+    match addr {
+        Some(a) => TcpStream::connect_timeout(&a, std::time::Duration::from_millis(600)).is_ok(),
+        None => false,
     }
 }
 

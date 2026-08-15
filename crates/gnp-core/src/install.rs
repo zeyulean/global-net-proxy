@@ -60,16 +60,32 @@ pub fn install_singbox(url: Option<&str>) -> Result<()> {
         bail!("下载 sing-box 失败: {}", url);
     }
 
-    // 解压
-    let st = Command::new("tar")
-        .args(["-xzf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(&tmp_dir)
-        .status()
-        .context("tar 解压失败")?;
-    if !st.success() {
-        bail!("解压 sing-box 失败");
+    // 解压 (Linux/macOS: tar.gz; Windows: zip 用 PowerShell Expand-Archive)
+    if std::env::consts::OS == "windows" {
+        let ps = format!(
+            "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+            archive.display(),
+            tmp_dir.display()
+        );
+        // -EncodedCommand 免引号转义
+        let st = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &crate::platform::ps_encode(&ps)])
+            .status()
+            .context("PowerShell Expand-Archive 失败")?;
+        if !st.success() {
+            bail!("解压 sing-box zip 失败");
+        }
+    } else {
+        let st = Command::new("tar")
+            .args(["-xzf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&tmp_dir)
+            .status()
+            .context("tar 解压失败")?;
+        if !st.success() {
+            bail!("解压 sing-box 失败");
+        }
     }
 
     // 找到二进制 (sing-box-<ver>-<os>-<arch>/sing-box)
@@ -96,7 +112,10 @@ fn find_bin(dir: &Path) -> Option<std::path::PathBuf> {
             if let Some(found) = find_bin(&path) {
                 return Some(found);
             }
-        } else if path.file_name().and_then(|n| n.to_str()) == Some("sing-box") {
+        } else if matches!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("sing-box") | Some("sing-box.exe")
+        ) {
             return Some(path);
         }
     }
