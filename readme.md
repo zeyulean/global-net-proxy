@@ -134,7 +134,7 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 | Mac | client | `~/.local/bin/gnp-client` | launchd com.gnp.sing-box | 单一 ✓ |
 | aipro | client + 无线路由 | `~/.local/bin/gnp-client` | systemd gnp-proxy | 单一 ✓（路由容器内 sing-box 为独立角色） |
 | lwtop | server | `/usr/local/bin/gnp-server` | systemd gnp-hy2 | 单一 ✓ (UDP 443) |
-| Windows | client ✨ | `%USERPROFILE%\.local\bin\gnp-client.exe` | 计划任务 gnp-singbox (ONLOGON) | 2026-08-15 新增 |
+| vmwin (Win11 ARM64) | client ✨ | `%USERPROFILE%\.local\bin\gnp-client.exe` | 计划任务 gnp-singbox (ONLOGON) | ✅ 实测: 出口8.209.203.17, proxy on/off 回合通过 (x64 模拟层) |
 
 ### Windows 支持（2026-08-15）
 
@@ -145,6 +145,9 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 - cleanup/recover 不适用（无 tun 路由风险），会给出说明
 - 交叉编译：`rustup target add x86_64-pc-windows-gnu && brew install mingw-w64 &&
   cargo build -p gnp-client --release --target x86_64-pc-windows-gnu`
+- vmwin 为 ARM64 Win11，x64 exe 走系统模拟层运行良好（sing-box with_quic ✓）
+- ⚠️ sing-box ≥1.13 兼容三连（generator 已修）：DNS 新格式（type/server 字段）、
+  route.default_domain_resolver、规则下载失败不得污染已有 .srs（tmp+rename）
 
 ### 部署规范（必须遵守）
 

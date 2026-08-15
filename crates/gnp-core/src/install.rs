@@ -136,19 +136,7 @@ pub fn install_rules() -> Result<()> {
         );
         let out = rules_dir.join(format!("geosite-{}.srs", g));
         println!("  ⬇️  geosite-{}", g);
-        let st = Command::new("curl")
-            .args(["-fsSL", "--max-time", "20"])
-            .arg("-o")
-            .arg(&out)
-            .arg(&url)
-            .status();
-        if let Ok(s) = st {
-            if s.success() {
-                println!("    ✓ 下载完成");
-            } else {
-                println!("    ✗ 失败");
-            }
-        }
+        download_rule_tmp(&url, &out);
     }
 
     // 国内规则
@@ -159,22 +147,35 @@ pub fn install_rules() -> Result<()> {
     for (name, url) in cn_rules {
         let out = rules_dir.join(format!("{}.srs", name));
         println!("  ⬇️  {}", name);
-        let st = Command::new("curl")
-            .args(["-fsSL", "--max-time", "30"])
-            .arg("-o")
-            .arg(&out)
-            .arg(url)
-            .status();
-        if let Ok(s) = st {
-            if s.success() {
-                println!("    ✓ 下载完成");
-            } else {
-                println!("    ✗ 失败");
-            }
-        }
+        download_rule_tmp(url, &out);
     }
     println!("✅ 规则集安装完成: {}", rules_dir.display());
     Ok(())
+}
+
+/// 下载规则到 .tmp, 成功才替换 (失败不污染已有有效规则文件)
+fn download_rule_tmp(url: &str, out: &Path) {
+    let tmp = out.with_extension("srs.tmp");
+    let st = Command::new("curl")
+        .args(["-fsSL", "--max-time", "30"])
+        .arg("-o")
+        .arg(&tmp)
+        .arg(url)
+        .status();
+    match st {
+        Ok(s) if s.success() && tmp.exists() => {
+            let _ = std::fs::rename(&tmp, out);
+            println!("    ✓ 下载完成");
+        }
+        _ => {
+            let _ = std::fs::remove_file(&tmp);
+            if out.exists() {
+                println!("    ⚠️ 下载失败, 保留现有 {}", out.file_name().unwrap_or_default().to_string_lossy());
+            } else {
+                println!("    ✗ 失败 (且本地无缓存)");
+            }
+        }
+    }
 }
 
 /// 生成 config.json (mixed 模式模板, sing-box hysteria2 outbound 格式)
@@ -190,13 +191,13 @@ pub fn generate_config(
         "log": { "level": "info", "timestamp": true },
         "dns": {
             "servers": [
-                { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
-                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "hy2-out", "type": "tcp" }
+                { "tag": "dns-direct", "type": "udp", "server": "223.5.5.5" },
+                { "tag": "dns-remote", "type": "tcp", "server": "1.1.1.1", "detour": "hy2-out" }
             ],
             "rules": [
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
             ],
-            "final": "dns-proxy",
+            "final": "dns-remote",
             "strategy": "prefer_ipv4"
         },
         "inbounds": [{
@@ -225,7 +226,8 @@ pub fn generate_config(
                 { "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" },
                 { "ip_is_private": true, "outbound": "direct" }
             ],
-            "final": "hy2-out"
+            "final": "hy2-out",
+            "default_domain_resolver": "dns-direct"
         }
     });
 

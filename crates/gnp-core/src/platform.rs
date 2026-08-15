@@ -102,7 +102,6 @@ pub fn ps_encode(script: &str) -> String {
     const TBL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let utf16: Vec<u8> = script
         .encode_utf16()
-        .chain(std::iter::once(0u16))
         .flat_map(|c| c.to_le_bytes())
         .collect();
     let mut out = String::new();
