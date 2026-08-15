@@ -66,11 +66,33 @@
 - E1: c820 加进 RTL8822B ID 表（上游把它错放 8821C 块）
 - E2: get_chip_info printk + 强制 chip_id=8822B（实测读回 0x09=8821C 值，错读）+ api 槽位 NULL 防护
 
-## 五、遗留问题
+## 五、E4-C 结局：补丁生效但 init 内部 hard lockup（2026-08-15 13:00 补记）
+
+二进制补丁后 init 确实开始执行（不再被跳过），但 **insmod 挂起 → 整机 hard lockup**：
+init 路径（register_pernet_device / nl80211_init(genl_family) / register_netdevice_notifier）
+撞上**更深的结构错位**——主线源码里所有与内核共享的大结构体都可能不符。
+结论：二进制补丁只解决"init 被跳过"这一层；要让 init 安全跑完，必须**全量同源编译**。
+
+## 六、E5：找到同源码 —— openEuler 22.03 LTS SP1（关键突破）
+
+华为官方文档《编译内核 - Atlas 200I A2 驱动开发指南》明确：
+Atlas 200I A2 的 5.10 内核源码取自 **openEuler 22.03 LTS SP1**（rt 变种：
+kernel-rt-source-5.10.0-136.12.0.rt62.59.oe2203sp1）。
+
+两个 ABI 指纹验证（gitee.com/openeuler/kernel，分支 openEuler-22.03-LTS-SP1）：
+- `ieee80211_data_to_8023_exthdr` 6 参（含 `bool is_amsdu`）——与华为 headers 一致 ✓（主线 5.10 是 5 参）
+- `struct wireless_dev` 无 `mgmt_registrations_lock`——与华为 headers 一致 ✓（主线有）
+
+⇒ 用该源码编 cfg80211/mac80211（config 取 /proc/config.gz + .scmversion "+" 复现 vermagic），
+所有结构布局同源对齐，无需任何适配补丁。
+产物验证标准：`readelf -rW | grep rela.gnu` 的 init 重定位偏移应直接为 **0x170**（无需二进制补丁）。
+
+> 厂出源码另一渠道：OrangePi 官网 AIpro 支持页 "Linux 源码" 下载项（image.build.tar.gz，
+> 需浏览器）；openEuler 源码仓库 https://repo.openeuler.org/openEuler-22.03-LTS-SP1/source/Packages/
+
+## 七、遗留问题（更新）
 
 1. chip_id 为何读成 0x09（0x0A-1）：USB 寄存器读路径 off-by-one？未深究（强制纠正已绕过）
-2. `struct module` 差异的 0x20 字节具体是什么（kbox/bbox 钩子？签名域？）——可从
-   /usr/src/linux-headers-5.10.0+/include/linux/module.h diff 主线得知，待记录
-3. E4-C 之后：net_device 等更深结构是否也有错位（88x2bu 华为头 vs cfg80211 主线头）——
-   若 wlan0 出现后行为异常，优先排查 include/linux/netdevice.h 差异
-4. aic8800（绿联 AX900）崩溃是否纯平台问题，值得用修复后的 cfg80211 复测一轮
+2. `struct module` 差异的 0x20 字节：openEuler 5.10 基线相对主线 5.10.0 tarball 的回移植差异
+   （openEuler 分支大量 backport，SUBLEVEL 不涨但内容前进）
+3. aic8800（绿联 AX900）崩溃是否纯平台问题，值得用同源编的 cfg80211 复测一轮
