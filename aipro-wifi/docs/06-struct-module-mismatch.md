@@ -119,9 +119,16 @@ kernel-rt-source-5.10.0-136.12.0.rt62.59.oe2203sp1）。
 1. ~~chip_id 为何读成 0x09~~ —— 已解：0x09 是 8821C 的真实芯片 ID，c820 卡实为 8821CU 硅片
 2. `struct module` 差异的 0x20 字节：openEuler 5.10 基线相对主线 5.10.0 tarball 的回移植差异
    （openEuler 分支大量 backport，SUBLEVEL 不涨但内容前进）
-3. regulatory.db 签名不匹配：openEuler 内置 sforshee 公钥 vs 磁盘上 Ubuntu wireless-regdb 的新版 db
+3. ~~开机自启~~ —— 已配置（2026-08-15）：
+   `rfkill.ko` 残留已改名 .stale-bak + `depmod -a` + `/etc/modules-load.d/aipro-wifi.conf`
+   （cfg80211/mac80211/8821cu），modprobe 全链路验证通过；udev modalias 亦可自动拉起
+4. regulatory.db 签名不匹配：openEuler 内置 sforshee 公钥 vs 磁盘上 Ubuntu wireless-regdb 的新版 db
    （当前以内置 world regdom 运行，2.4G ch11 可用；5G/精确功率需换 openEuler 版 regulatory.db）
-4. 开机自启未做：需 modules-load.d + depmod（注意 rfkill.ko 残留陷阱，见 docs/01）
 5. AP 模式（原始目标：aipro 做 AP + gnp 透明代理出口）：8821cu 支持 AP，
    hostapd.conf（wlan_aipro）已在 /etc/hostapd/，wlan 客户端模式已验证，AP 待做
-6. aic8800（绿联 AX900）崩溃是否掺入 cfg80211 因素，可用同源模块复测（低优先级）
+6. ⚠️ 运维注意：**运行中 rmmod/modprobe 循环后** wpa_supplicant 会持有过期 netlink 句柄，
+   NM 看不到扫描结果（iw 直扫正常）。处置：`ip link set wlan0 down/up` + rescan 可恢复；
+   真实开机冷启动无此问题（已验证首次加载即自动连接）
+7. aic8800（绿联 AX900）崩溃是否掺入 cfg80211 因素，可用同源模块复测（低优先级）
+8. 镜像结论（2026-08-15 补）：官方 Ubuntu 版镜像（20240924）本身就不含无线模块——
+   不是刷错镜像；openEuler 版镜像大概率自带完整模块（内核同为 openEuler 血统）
