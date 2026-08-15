@@ -5,6 +5,30 @@
 > 用主线源码编出的模块把 `init` 指针写进 0x150 槽位，而内核从 0x170 读 → 读到 NULL
 > → **内核静默跳过模块 init，insmod 却返回成功**。
 
+## ✅ 终局（2026-08-15 13:20）：wlan0 完全可用
+
+```
+wlan0   UP   192.168.0.50/24
+Connected to 34:f7:16:8f:e6:d3 — SSID: XinYuan（NM 原配置档案自动连接）
+freq: 2462 (ch11) | signal: -57 dBm | tx 200 Mbit/s | ping 网关 0% 丢包
+```
+
+**最终工作组合**：
+```
+cfg80211.ko + mac80211.ko   ← openEuler-22.03-LTS-SP1 同源码编译（E5 产物，零适配补丁，零二进制补丁）
+8821cu.ko                    ← 原厂 DKMS 5.12.0.4（/lib/modules/5.10.0+/，从未需要换）
+加载：insmod cfg80211 → insmod mac80211 → insmod 8821cu
+```
+
+**最终真相链（三层根因叠加 + 一个大乌龙）**：
+1. 出厂 kernel 树缺 cfg80211/mac80211（20240924 官方镜像同样缺）——WiFi 从出厂就是坏的
+2. 8/12 用主线 linux-5.10 源码补编 → struct module/无线结构全线 ABI 错位 →
+   **模块 init 被静默跳过** → cfg80211 全局未初始化 → 8821cu probe 喂进坏栈 → hard lockup
+   （"8821cu 型号错误会锁死"是错判：8821cu 本是对的驱动，死因是坏 cfg80211）
+3. 大乌龙：`chip_id=0x09` 不是错读——**c820 这块卡就是 8821CU 硅片**（OEM 改了 USB ID）。
+   E2 的"强制 8822B"补丁反而制造了 `Download Firmware failed`。88x2bu 整条线是弯路
+   （其 NULL oops 的根因同样是坏 cfg80211，与驱动无关）。
+
 ## 一、证据链（全部实测）
 
 1. 补丁版 cfg80211 insmod 返回 0（"成功"），但：
@@ -92,7 +116,12 @@ kernel-rt-source-5.10.0-136.12.0.rt62.59.oe2203sp1）。
 
 ## 七、遗留问题（更新）
 
-1. chip_id 为何读成 0x09（0x0A-1）：USB 寄存器读路径 off-by-one？未深究（强制纠正已绕过）
+1. ~~chip_id 为何读成 0x09~~ —— 已解：0x09 是 8821C 的真实芯片 ID，c820 卡实为 8821CU 硅片
 2. `struct module` 差异的 0x20 字节：openEuler 5.10 基线相对主线 5.10.0 tarball 的回移植差异
    （openEuler 分支大量 backport，SUBLEVEL 不涨但内容前进）
-3. aic8800（绿联 AX900）崩溃是否纯平台问题，值得用同源编的 cfg80211 复测一轮
+3. regulatory.db 签名不匹配：openEuler 内置 sforshee 公钥 vs 磁盘上 Ubuntu wireless-regdb 的新版 db
+   （当前以内置 world regdom 运行，2.4G ch11 可用；5G/精确功率需换 openEuler 版 regulatory.db）
+4. 开机自启未做：需 modules-load.d + depmod（注意 rfkill.ko 残留陷阱，见 docs/01）
+5. AP 模式（原始目标：aipro 做 AP + gnp 透明代理出口）：8821cu 支持 AP，
+   hostapd.conf（wlan_aipro）已在 /etc/hostapd/，wlan 客户端模式已验证，AP 待做
+6. aic8800（绿联 AX900）崩溃是否掺入 cfg80211 因素，可用同源模块复测（低优先级）

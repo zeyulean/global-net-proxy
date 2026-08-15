@@ -1,0 +1,23 @@
+From: aipro-wifi
+Subject: [PATCH] add USB id 0xC820 (RTL8812BU) to CONFIG_RTL8822B block
+
+上游 morrownr/88x2bu-20210702 的 os_dep/linux/usb_intf.c 把 0xC820 放在了
+`#ifdef CONFIG_RTL8821C` 块内（driver_info=RTL8821C）。但 88x2bu 编译时
+CONFIG_RTL8821C 未定义（驱动是 CONFIG_RTL8822B），导致 c820 整行被预处理器
+排除——88x2bu.ko 不含 c820 的 USB alias，驱动不认 RTL8812BU 这块卡。
+
+修复：在 CONFIG_RTL8822B 块内（b82C 条目后）加一份 c820 条目，driver_info=RTL8822B。
+
+验证：modinfo 88x2bu.ko | grep v0BDApC820 应出现
+      usb:v0BDApC820d*dc*dsc*dp*icFFiscFFipFFin*
+
+--- a/os_dep/linux/usb_intf.c
++++ b/os_dep/linux/usb_intf.c
+@@ -242,6 +242,7 @@
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB812, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID for USB Single-function, WiFi only */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB81A, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xB82C, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Default ID for USB multi-function */
++	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xC820, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* 8812BU C820 patched */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xC822, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* 8812BU */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(0x7392, 0xC822, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Edimax ED-UP */
+ 	{USB_DEVICE_AND_INTERFACE_INFO(0x7392, 0xB611, 0xff, 0xff, 0xff), .driver_info = RTL8822B}, /* Edimax */
