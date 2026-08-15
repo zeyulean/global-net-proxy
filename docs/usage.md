@@ -521,6 +521,21 @@ gnp-client proxy
 
 ---
 
+## 一键接入：gen-user → peer（2026-08-15 新增）
+
+```bash
+# server 端（lwtop）：
+sudo gnp-server gen-user --name macbook          # 生成密码+写入配置+重启 hy2+落盘 gnp.cfg
+sudo gnp-server gen-user --name vmwin --out /tmp/vmwin.cfg
+
+# 客户端（任意平台）：
+gnp-client peer gnp.cfg                          # 解析 cfg → 装 sing-box/规则/生成配置/装服务
+gnp-client start && gnp-client test              # 上线验证
+```
+
+gnp.cfg 字段：`user-name / server-ip / server-port / peer-key`
+⚠️ peer 会覆盖 config.json——手工精调过的节点（如 deploy/config-mac）先备份。
+
 ## gnp-server 命令详解
 
 gnp-server 管理 Hysteria2 (QUIC) server（sing-box hysteria2 inbound，systemd 服务 `gnp-hy2`），共 **7 个子命令**。
