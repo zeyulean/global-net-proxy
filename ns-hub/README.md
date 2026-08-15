@@ -32,8 +32,21 @@ ningsure 有**两道防火墙**，2026-08-15 实测踩坑：
 aipro  → hub(10.99.0.1)    13.5ms   握手 ✓
 coze-pc → hub               27.9ms   握手 ✓
 coze-pc → aipro(10.99.0.2) 41.4ms   ping ✓
-coze-pc $ ssh lwboy@10.99.0.2       → aipro SSH OK（原始需求闭环）
 ```
+
+### ssh 矩阵（全通，旧 7272 反连隧道已退役）
+
+```
+aipro/ningsure/coze-pc 三机 ~/.ssh/config 互通条目已部署：
+  ningsure → 公网 47.103.71.171（带外原则，不依赖 mesh）
+  aipro/coze-pc → wg mesh 10.99.0.x
+六向 `ssh <host>` 全部密钥直连 ✓；Mac 的 coze-pc 条目改走
+  ProxyJump ningsure → 10.99.0.3（原 127.0.0.1:7272 已删）
+coze-pc 的 ssh-tunnel-keepalive.service（ssh -R 7272）已 disable --now
+```
+
+> 踩坑：ssh config **首匹配优先**——旧 7272 条目在文件前部，追加的新条目不生效；
+> 追加部署前先 grep 清旧块。
 
 ## 各节点依赖（2026-08-15 已全部验证就绪）
 
