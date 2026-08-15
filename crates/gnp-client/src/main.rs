@@ -3,6 +3,8 @@
 //! 管理本机 sing-box mixed 代理 (hysteria2/QUIC 隧道)。
 //! 安全原则: 只用 mixed 代理模式 (socks5+http on 1080), 不碰路由表, 零断网风险。
 
+use std::io::IsTerminal;
+
 mod cleanup;
 mod recover;
 mod register;
@@ -549,6 +551,25 @@ fn cmd_test() -> Result<()> {
 fn cmd_env(on: bool, off: bool, hook: bool) -> Result<()> {
     let url = "http://127.0.0.1:1080".to_string();
     let no_proxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16";
+
+    // 直接运行（输出到终端）时给引导而非裸 export —— 子进程改不了父 shell 环境
+    if (on || off || hook)
+        && std::io::stdout().is_terminal()
+        && std::env::var("GNP_ENV_RAW").is_err()
+    {
+        println!("⚠️  env 的输出需要 eval 装载 —— 直接运行不会改变当前 shell：");
+        if on {
+            println!(r#"  eval "$(gnp-client env --on)"    # 或用快捷函数: gnp-on"#);
+        }
+        if off {
+            println!(r#"  eval "$(gnp-client env --off)"   # 或用快捷函数: gnp-off"#);
+        }
+        if hook {
+            println!(r#"  eval "$(gnp-client env --hook)"  # 放入 ~/.zshrc 得到 gnp-on/gnp-off"#);
+        }
+        println!("   (新终端已自动加载快捷函数；当前旧会话可 source ~/.zshrc)");
+        return Ok(());
+    }
     if on {
         println!("export http_proxy={}", url);
         println!("export https_proxy={}", url);
