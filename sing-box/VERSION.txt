@@ -1,0 +1,1 @@
+sing-box 1.12.3 linux-arm64 (from aipro gnp deploy 2026-08-15)
