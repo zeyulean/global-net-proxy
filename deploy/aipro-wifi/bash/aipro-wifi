@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# aipro-wifi — AP 一键开关（aipro 上，装于 ~/.local/bin/）
+#
+# 用法:
+#   aipro-wifi on       # 开 AP（模块缺失时自动补载；docker 拉起容器）
+#   aipro-wifi off      # 关 AP（停容器 + 尽力卸载射频模块）
+#   aipro-wifi status   # 状态总览
+#
+# 设计: 开机链已全自动(udev+modalias), 日常开关只需 docker(lwboy 免密);
+#       模块操作需 root — 有免密 sudo 或以 root 运行时自动补, 否则提示。
+set -u
+CMD="${1:-status}"
+AIC=/lib/modules/5.10.0+/kernel/drivers/net/wireless/aic8800
+CONTAINER=aipro-wifi-router
+
+as_root() {  # 能提权则 echo "sudo -n" / root 则空 / 否则失败
+  [ "$(id -u)" = 0 ] && return 0
+  sudo -n true 2>/dev/null && return 0
+  return 1
+}
+run_root() {  # run_root <cmd...>
+  if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n "$@"; fi
+}
+
+ensure_modules() {
+  lsmod | grep -q "^aic8800_fdrv" && return 0
+  if as_root; then
+    echo "→ 补载 aic 模块链..."
+    run_root insmod "$AIC/aic_load_fw.ko" 2>/dev/null
+    sleep 8   # 固件下载 + 重枚举
+    run_root insmod "$AIC/aic8800_fdrv.ko" 2>/dev/null
+    sleep 4
+    lsmod | grep -q "^aic8800_fdrv" && echo "  模块就绪" || { echo "  ✗ 模块加载失败"; return 1; }
+  else
+    echo "⚠️  aic 模块未加载且无免密 sudo（正常开机已自动加载，此为罕见场景）"
+    return 1
+  fi
+}
+
+case "$CMD" in
+  on)
+    echo "== aipro-wifi ON =="
+    ensure_modules || true
+    if ip link show wlan1 &>/dev/null; then
+      docker start "$CONTAINER" 2>/dev/null || docker restart "$CONTAINER"
+      for i in $(seq 1 12); do
+        iw dev wlan1 info 2>/dev/null | grep -q "type AP" && break; sleep 1
+      done
+      if iw dev wlan1 info 2>/dev/null | grep -q "type AP"; then
+        echo "✅ AP 已开启: $(iw dev wlan1 info | awk '/ssid/{print $2}') ($(iw dev wlan1 info | awk '/channel/{print $2,$3}'))"
+      else
+        echo "✗ AP 未就绪, 查看: docker logs $CONTAINER"
+        exit 1
+      fi
+    else
+      echo "✗ wlan1 不存在（模块未加载）; docker logs $CONTAINER 排查"
+      exit 1
+    fi
+    ;;
+  off)
+    echo "== aipro-wifi OFF =="
+    docker stop "$CONTAINER" >/dev/null && echo "✅ AP 容器已停 (SSID aipro 消失)"
+    as_root && run_root rmmod aic8800_fdrv aic_load_fw 2>/dev/null \
+      && echo "  射频模块已卸载" || echo "  (模块保持加载, 仅停 AP)"
+    ;;
+  status)
+    echo "== aipro-wifi 状态 =="
+    printf "  aic 模块: %s\n" "$(lsmod | grep -q '^aic8800_fdrv' && echo 已加载 || echo 未加载)"
+    printf "  wlan1(AP): %s\n" "$(iw dev wlan1 info 2>/dev/null | grep -E 'ssid' | awk '{print $2}' || echo 不存在)"
+    printf "  容器: %s\n" "$(docker ps -a --filter name=$CONTAINER --format '{{.Status}}')"
+    printf "  客户端: %s\n" "$(iw dev wlan1 station dump 2>/dev/null | grep -c Station) 个"
+    ;;
+  *)
+    echo "用法: aipro-wifi {on|off|status}"
+    exit 1
+    ;;
+esac
