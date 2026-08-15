@@ -6,7 +6,7 @@ set -euo pipefail
 
 WG_DIR=/etc/wireguard
 HUB_KEY=$WG_DIR/ningsure.key
-HUB_PORT=51820
+HUB_PORT=9100
 HUB_IP=10.99.0.1
 
 mkdir -p "$WG_DIR"
@@ -40,12 +40,17 @@ ${PEERS}
 EOF
 chmod 600 $WG_DIR/wg0.conf
 
+# 2.5 主机防火墙放行（⚠️ 双层防火墙：阿里云控制台 + 主机 ufw 都要开）
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+  ufw allow ${HUB_PORT}/udp comment ns-hub-wg
+fi
+
 # 3. 起服务
 systemctl enable --now wg-quick@wg0 2>/dev/null || systemctl restart wg-quick@wg0
 sleep 1
 
 echo "== hub 就绪 =="
 echo "  hub 公钥（分发给 peers）: $HUB_PUB"
-echo "  监听: 0.0.0.0:${HUB_PORT}/UDP（记得云安全组放行）"
+echo "  监听: 0.0.0.0:${HUB_PORT}/UDP（云控制台与主机 ufw 均需放行）"
 ip -br addr show wg0
 wg show wg0 || true

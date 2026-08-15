@@ -14,7 +14,7 @@ case "$NODE" in
   *) echo "未知节点 $NODE（aipro|coze-pc）"; exit 1 ;;
 esac
 
-HUB_ENDPOINT="${HUB_ENDPOINT:-47.103.71.171:51820}"
+HUB_ENDPOINT="${HUB_ENDPOINT:-47.103.71.171:9100}"
 WG_DIR=/etc/wireguard
 KEY=$WG_DIR/$NODE.key
 
@@ -58,4 +58,4 @@ fi
 systemctl enable --now wg-quick@wg0 2>/dev/null || systemctl restart wg-quick@wg0
 sleep 1
 ip -br addr show wg0
-echo "验收: ping 10.99.0.1 （hub 安全组放行 UDP 51820 后即通）"
+echo "验收: ping 10.99.0.1 （hub 侧 UDP 9100 放行后即通）"
