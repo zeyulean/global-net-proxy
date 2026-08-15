@@ -69,6 +69,17 @@ nmcli device set wlan1 managed no     # 若 NM 又抢 wlan1（持久配置已写
 # 改 SSID/密码/信道：hostapd.conf → docker restart
 ```
 
+## 开机自愈（2026-08-15 重启实测通过）
+
+黑名单已摘除（那是坏 cfg80211 时代的保守措施）。开机链全自动：
+```
+上电 → 绿联存储态(a69c:5724) → udev aic.rules 弹出 → bootrom(a69c:8d80)
+→ modalias 自动加载 aic_load_fw → 固件下载 → 重枚举(368b:8d88)
+→ modalias 自动加载 aic8800_fdrv → wlan1 → 容器(restart 策略)拉起 hostapd → AP
+```
+配套：wlan0 栈走 modules-load.d + NM 自动连 XinYuan；wlan1 持久 unmanaged。
+真机重启验证：27s 内 wlan0 连接 + wlan1 AP + 容器 Up 全部就位。
+
 ## 已知限制 / 后续
 
 - 信道宽度 20MHz（VHT80 参数对 FullMAC 驱动未生效，可再调）

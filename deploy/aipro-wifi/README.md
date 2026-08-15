@@ -16,7 +16,7 @@
 | wlan0 客户端 | ✅ | 连接 XinYuan，-57dBm，200Mbps tx，ping 网关 0% 丢包 |
 | 绿联 AX900 (wlan1) | ✅ | CONFIG_USB_BT=y 三接口重编，WiFi6 双频，扫描正常 |
 | **无线路由 docker** | ✅ | [router-docker/](router-docker/README.md)：AP+DHCP+透明代理(hy2/QUIC 出海)，Mac 实测 google 204/0.3s |
-| 开机自启 | ✅ | modules-load.d（wlan0 栈）；路由容器 `--restart unless-stopped`（wlan1 驱动需手动 aic_load.sh）|
+| 开机自启 | ✅ **全自动**（2026-08-15 重启实测 27s 全就位）| blacklist 已摘；udev+modalias 链自动加载 aic 驱动；容器 restart 策略拉起 AP |
 
 ## 工作配方（复现）
 
