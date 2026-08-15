@@ -16,3 +16,4 @@
 *.tmp
 *.log
 .DS_Storequic-test/certs/*.key
+.DS_Store

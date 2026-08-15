@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::Command;
 
-use gnp_core::wg;
+use gnp_core::tunnel;
 
 /// global-net-proxy server — Hysteria2 (QUIC) server 管理
 ///
@@ -395,18 +395,18 @@ fn detect_wan_iface() -> Result<String> {
 /// 状态
 fn cmd_status() -> Result<()> {
     println!("== gnp-server 状态 (Hysteria2/QUIC) ==");
-    if !wg::hy2_server_active() {
+    if !tunnel::hy2_server_active() {
         println!("❌ gnp-hy2 服务未激活 (运行 gnp-server install)");
         return Ok(());
     }
     println!("✅ gnp-hy2 服务已激活");
-    if wg::port_443_listening() {
+    if tunnel::port_443_listening() {
         println!("✅ UDP 443 正在监听");
     } else {
         println!("⚠️  UDP 443 未检测到监听!");
     }
     println!("\n📋 服务详情:");
-    match wg::hy2_status_raw() {
+    match tunnel::hy2_status_raw() {
         Ok(raw) => println!("{}", raw),
         Err(e) => println!("  (获取失败: {})", e),
     }

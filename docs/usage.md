@@ -118,7 +118,7 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 ```bash
 gnp-client status    # 查看状态
 gnp-client test      # 测试代理连通性
-gnp-client wg        # Hysteria2 隧道诊断
+gnp-client tunnel    # Hysteria2 隧道诊断 (兼容旧名 wg)
 ```
 
 ---
@@ -247,12 +247,13 @@ gnp-client config --show
 
 ---
 
-### wg — Hysteria2 隧道诊断
+### tunnel — Hysteria2 隧道诊断
 
-显示隧道配置详情并测试连通性。（命令名 `wg` 为历史沿用，实际诊断的是 hysteria2/QUIC 隧道。）
+显示隧道配置详情并测试连通性。
+（2026-08-15 起主命令为 `tunnel`，旧名 `wg` 保留为兼容别名——wg 时代历史沿用。）
 
 ```bash
-gnp-client wg
+gnp-client tunnel   # 或旧名 gnp-client tunnel
 ```
 
 **输出内容**：
@@ -776,7 +777,7 @@ gnp-client status
 gnp-client config --check
 
 # 3. 隧道诊断
-gnp-client wg
+gnp-client tunnel
 
 # 4. 如果代理不工作，尝试重启
 gnp-client stop

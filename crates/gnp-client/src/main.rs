@@ -11,7 +11,7 @@ mod update_rules;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use gnp_core::{config, install, platform, proxy, service, wg};
+use gnp_core::{config, install, platform, proxy, service, tunnel};
 
 /// global-net-proxy client — 管理 sing-box mixed 代理 (hysteria2/QUIC 隧道)
 ///
@@ -21,7 +21,7 @@ use gnp_core::{config, install, platform, proxy, service, wg};
 /// 快速开始:
 ///   gnp-client start     # 启动代理 (开机自启)
 ///   gnp-client status    # 查看状态
-///   gnp-client wg        # 隧道诊断
+///   gnp-client tunnel    # 隧道诊断 (兼容旧名 wg)
 #[derive(Parser)]
 #[command(
     name = "gnp-client",
@@ -42,7 +42,7 @@ use gnp_core::{config, install, platform, proxy, service, wg};
         gnp-client start           启动代理 (注册开机自启)\n  \
         gnp-client stop            停止代理\n  \
         gnp-client status          查看状态 (进程/端口/隧道/出口IP)\n  \
-        gnp-client wg              隧道诊断\n  \
+        gnp-client tunnel          隧道诊断 (兼容旧名 wg)\n  \
         gnp-client test            测试代理连通性\n  \
         gnp-client config --check  校验配置安全\n  \
         gnp-client proxy --on      开启系统代理 (macOS)\n\
@@ -101,15 +101,15 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// 隧道诊断
-    #[command(long_about = "显示 hysteria2/QUIC 隧道配置详情并测试连通性。\n\n\
+    /// 隧道诊断 (兼容旧名 wg)
+    #[command(alias = "wg", long_about = "显示 hysteria2/QUIC 隧道配置详情并测试连通性。\n\n\
         输出内容:\n  \
         1. 隧道配置 (远端 server:port / 密码状态)\n  \
         2. 隧道连通性 (通过 socks5h 检测出口 IP 和延迟)\n  \
         3. 代理测试 (github + google HTTP 状态码)\n\n\
         示例:\n  \
-        gnp-client wg")]
-    Wg,
+        gnp-client tunnel   # 或旧名 gnp-client wg")]
+    Tunnel,
     /// 测试代理连通性
     #[command(long_about = "快速测试代理是否可用。\n\n\
         测试内容:\n  \
@@ -253,7 +253,7 @@ fn main() -> Result<()> {
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(),
         Commands::Config { show, check } => cmd_config(show, check),
-        Commands::Wg => cmd_wg(),
+        Commands::Tunnel => cmd_tunnel(),
         Commands::Test => cmd_test(),
         Commands::Install {
             server,
@@ -443,8 +443,8 @@ fn cmd_config(show: bool, check: bool) -> Result<()> {
     Ok(())
 }
 
-/// 隧道诊断
-fn cmd_wg() -> Result<()> {
+/// 隧道诊断 (Hysteria2/QUIC; 旧名 wg)
+fn cmd_tunnel() -> Result<()> {
     let platform = platform::ensure_supported()?;
     println!("== 隧道诊断 ({}) ==", platform.as_str());
 
@@ -475,7 +475,7 @@ fn cmd_wg() -> Result<()> {
         ("github", "https://api.github.com/zen"),
         ("google", "https://www.google.com"),
     ] {
-        match wg::test_proxy(proxy, url, 8) {
+        match tunnel::test_proxy(proxy, url, 8) {
             Ok((code, ms)) => println!("  {}: HTTP {} ({}ms)", name, code, ms),
             Err(e) => println!("  {}: 失败 ({})", name, e),
         }
@@ -501,7 +501,7 @@ fn cmd_test() -> Result<()> {
         ("github", "https://api.github.com/zen"),
         ("google", "https://www.google.com"),
     ] {
-        match wg::test_proxy(proxy, url, 8) {
+        match tunnel::test_proxy(proxy, url, 8) {
             Ok((code, ms)) => println!("  {}: HTTP {} ({}ms)", name, code, ms),
             Err(e) => println!("  {}: 失败 ({})", name, e),
         }
@@ -544,5 +544,5 @@ fn check_port(port: u16) -> bool {
 
 /// 简单出口检测
 fn test_proxy_simple() -> Result<(String, u64)> {
-    wg::detect_exit_ip("socks5h://127.0.0.1:1080", 8)
+    tunnel::detect_exit_ip("socks5h://127.0.0.1:1080", 8)
 }

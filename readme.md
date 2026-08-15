@@ -127,16 +127,32 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 
 > 密码需要安全传输，不影响 server 安全性。密码池存在 gitee 私有仓库。
 
+## 部署矩阵（2026-08-15）
+
+| 节点 | 角色 | gnp-client | 状态 |
+|---|---|---|---|
+| Mac (本机) | client, launchd | `~/.local/bin/gnp-client` → repo `bin/` | ✅ 运行中 :1080 |
+| aipro (192.168.1.2) | client + **无线路由** (aipro-wifi/) | `~/.local/bin/gnp-client` | ✅ :1080 + AP ssid=aipro |
+| lwtop (海外 8.209.203.17) | server (gnp-hy2) | — | ✅ QUIC 443 |
+
+> 全线 CN 分流：geosite/geoip-cn 直连，国外走 hy2/QUIC。wg 时代代码已清
+> （`tunnel` 为主命令，`wg` 保留别名；运行配置纯 hysteria2 outbound）。
+
 ## 目录结构
 
 ```
 ├── Cargo.toml              # Cargo workspace 根
 ├── crates/
 │   ├── gnp-core/           # 共享库: 平台/config/hy2 诊断/服务管理
-│   ├── gnp-client/         # client CLI (install/start/stop/status/wg/config/test/register/update-rules/cleanup/recover/proxy)
+│   ├── gnp-client/         # client CLI (install/start/stop/status/tunnel/config/test/register/update-rules/cleanup/recover/proxy)
 │   └── gnp-server/         # server CLI (install/uninstall/status/users/add-user/pregen/activate)
 ├── vendor/
 │   └── sing-box/           # submodule: sing-box 源码
+├── aipro-wifi/             # 子项目: OrangePi AIpro WiFi 修复 + 无线路由 docker
+│   ├── artifacts/          #   可部署 .ko 三件套 + 恢复脚本 (分钟级重建)
+│   ├── router-docker/      #   无线路由容器: hostapd+dnsmasq+sing-box tproxy (连 SSID aipro 即出海)
+│   ├── docs/01-06          #   三层根因链 + 21 轮实验翻案全记录
+│   └── resources/          #   submodule → 分支 aipro-resources (sing-box 二进制 + aic 源码)
 ├── bin/                    # 构建产物 (gitignore)
 ├── bash/
 │   ├── install.sh          # 构建 + 安装所有依赖到安装目录
