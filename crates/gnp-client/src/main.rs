@@ -10,7 +10,7 @@ mod recover;
 mod register;
 mod update_rules;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 
 use gnp_core::{config, install, platform, proxy, service, tunnel};
@@ -122,6 +122,15 @@ enum Commands {
         示例:\n  \
         gnp-client test")]
     Test,
+    /// 从 gnp.cfg 接入（peer）
+    #[command(long_about = "读取 gnp-server gen-user 生成的 gnp.cfg，一键完成安装。\n\n\
+        cfg 字段: user-name / server-ip / server-port / peer-key\n\n\
+        流程 = install: 下载 sing-box → 规则集 → 生成 config.json → 装服务\n\n\
+        示例:\n          gnp-client peer gnp.cfg\n          gnp-client peer ~/Downloads/gnp.cfg --name 自定义本机名(仅显示用)")]
+    Peer {
+        /// gnp.cfg 路径
+        cfg: String,
+    },
     /// 安装 sing-box + 规则集 + 生成配置
         #[command(long_about = "下载 sing-box 二进制 + 规则集, 生成 mixed+hysteria2 配置。\n\n\
             行为步骤:\n  \
@@ -275,6 +284,7 @@ fn main() -> Result<()> {
         Commands::Config { show, check } => cmd_config(show, check),
         Commands::Tunnel => cmd_tunnel(),
         Commands::Test => cmd_test(),
+        Commands::Peer { cfg } => cmd_peer(&cfg),
         Commands::Install {
             server,
             password,
@@ -323,6 +333,49 @@ fn main() -> Result<()> {
         Commands::Env { on, off, hook } => cmd_env(on, off, hook),
         Commands::Proxy { on, off, status } => cmd_proxy(on, off, status),
     }
+}
+
+/// 从 gnp.cfg 接入
+fn cmd_peer(cfg_path: &str) -> Result<()> {
+    let content = std::fs::read_to_string(cfg_path)
+        .map_err(|e| anyhow::anyhow!("读取 {} 失败: {}", cfg_path, e))?;
+
+    // 极简 key = value 解析（# 注释行忽略）
+    let mut kv = std::collections::HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            kv.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    let server = kv.get("server-ip").context("cfg 缺少 server-ip")?.clone();
+    let password = kv.get("peer-key").context("cfg 缺少 peer-key")?.clone();
+    let port: u16 = kv
+        .get("server-port")
+        .map(|s| s.parse().unwrap_or(443))
+        .unwrap_or(443);
+    let user = kv.get("user-name").cloned().unwrap_or_else(|| "peer".into());
+
+    println!("== gnp peer 接入 ({} → {}:{}) ==", user, server, port);
+
+    // 复用 install 流水线
+    let platform = platform::ensure_supported()?;
+    if !platform::sb_exists() {
+        install::install_singbox(None)?;
+    } else {
+        println!("✅ sing-box 已存在: {}", platform::sb_bin().display());
+    }
+    install::install_rules()?;
+    install::generate_config(&server, &password, port)?;
+    if platform == platform::Platform::Linux {
+        service::install_linux()?;
+    }
+    println!("\n✅ peer 接入完成! 运行 `gnp-client start` 启动");
+    println!("   验证: gnp-client test");
+    Ok(())
 }
 
 /// 安装

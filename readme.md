@@ -12,7 +12,8 @@
 - 🔒 **Hysteria2 (QUIC) 加密**：基于 QUIC/TLS 1.3，抗封锁，UDP 443 端口
 - 🔑 **密码认证**：server 端密码池（HY2_PASSWORD），替代 wg 公钥对
 - 🔒 **mixed 代理模式（安全）**：只开 socks5+http 端口 1080，**绝不使用 tun 模式**
-- 💻 **Rust CLI**：client + server 统一管理，跨平台（macOS launchd / Linux systemd）
+- 💻 **Rust CLI 三平台**：macOS (launchd) / Linux (systemd) / Windows (schtasks)
+- 🤝 **一键接入**：`gnp-server gen-user` 生成 gnp.cfg → 客户端 `gnp-client peer gnp.cfg` 完成
 - 📦 **sing-box 1.13.16**：使用 outbound hysteria2 格式（with_quic 构建）
 
 ## CLI 代理（curl/pip/uv/npm/git 等）
@@ -96,6 +97,7 @@ gnp-client tunnel   # 隧道诊断（兼容旧名 wg）
 gnp-client config --check  # 校验配置安全
 gnp-client test     # 测试代理连通性
 gnp-client env      # CLI 代理环境状态（gnp-on/gnp-off 快捷开关）
+gnp-client peer gnp.cfg  # 从 server 发来的 gnp.cfg 一键接入
 gnp-client update-rules --install-cron  # 每日自动更新规则
 ```
 
@@ -183,28 +185,12 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 ## 目录结构
 
 ```
-├── Cargo.toml              # Cargo workspace 根
-├── crates/
-│   ├── gnp-core/           # 共享库: 平台/config/hy2 诊断/服务管理
-│   ├── gnp-client/         # client CLI (install/start/stop/status/tunnel/config/test/register/update-rules/cleanup/recover/proxy)
-│   └── gnp-server/         # server CLI (install/uninstall/status/users/add-user/pregen/activate)
-├── vendor/
-│   └── sing-box/           # submodule: sing-box 源码
-├── aipro-wifi/             # 子项目: OrangePi AIpro WiFi 修复 + 无线路由 docker
-│   ├── artifacts/          #   可部署 .ko 三件套 + 恢复脚本 (分钟级重建)
-│   ├── router-docker/      #   无线路由容器: hostapd+dnsmasq+sing-box tproxy (连 SSID aipro 即出海)
-│   ├── docs/01-06          #   三层根因链 + 21 轮实验翻案全记录
-│   └── resources/          #   submodule → 分支 aipro-resources (sing-box 二进制 + aic 源码)
-├── bin/                    # 构建产物 (gitignore)
-├── bash/
-│   ├── install.sh          # 构建 + 安装所有依赖到安装目录
-│   ├── uninstall.sh        # 卸载
-│   └── client/             # (应急) 断网恢复/清理 bash 兜底脚本
-├── config/                 # 安全配置模板 (mixed + hysteria2 outbound)
-├── docs/                   # 架构 + 安装指南 + 自动注册 + 事故记录
-└── peers/                  # server 密码校验文件 + 用户池（gitee 私有）
-    └── HY2_PASSWORD        # server 密码校验值（可公开）
-    # slot-*.json           # 用户池（含密码），只存 gitee 私有仓库，不进公开 repo
+├── Cargo.toml / crates/     # gnp 产品: gnp-core + gnp-client + gnp-server
+├── config/safe-template.json# 安全配置模板 (mixed + hysteria2)
+├── bash/                    # 构建安装脚本
+├── docs/                    # 产品文档 (usage/setup/architecture/...)
+├── vendor/sing-box/         # submodule: sing-box 源码
+└── deploy/                  # 个人部署资产 (aipro-wifi / ns-hub / peers / ...) — 与产品分离
 ```
 
 ## 仓库

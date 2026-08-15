@@ -99,6 +99,20 @@ enum Commands {
         示例:\n  \
         sudo gnp-server add-user macbook\n  \
         sudo gnp-server add-user aipro")]
+    /// 生成 gnp.cfg peer 配置文件（gen-user）
+    #[command(long_about = "添加用户并生成 gnp.cfg peer 配置文件。\n\n\
+        流程: 生成密码 → 写入 server 配置(自动 restart gnp-hy2) → 落盘 gnp.cfg\n\n\
+        gnp.cfg 内容: user-name / server-ip / server-port / peer-key\n\n\
+        客户端一条命令接入:\n          gnp-client peer gnp.cfg\n\n\
+        示例:\n          sudo gnp-server gen-user --name macbook")]
+    GenUser {
+        /// 用户名（写入 cfg 的 user-name，仅标识用途）
+        #[arg(long)]
+        name: String,
+        /// gnp.cfg 输出路径（默认当前目录 gnp.cfg）
+        #[arg(long, default_value = "gnp.cfg")]
+        out: String,
+    },
     AddUser {
         /// 用户名称
         name: String,
@@ -153,6 +167,7 @@ fn main() -> Result<()> {
         Commands::Uninstall => cmd_uninstall(),
         Commands::Status => cmd_status(),
         Commands::Users => cmd_users(),
+        Commands::GenUser { name, out } => cmd_gen_user(&name, &out),
         Commands::AddUser { name } => cmd_add_user(&name),
         Commands::Pregen { count } => cmd_pregen(count),
         Commands::Activate { id } => cmd_activate(&id),
@@ -490,6 +505,40 @@ fn gen_password() -> String {
     let a = h(nanos);
     let b = h(nanos.wrapping_add(pid as u128));
     format!("gnp-{:x}{:x}", a, b)
+}
+
+/// 生成 gnp.cfg peer 配置（添加用户 + 落盘 cfg）
+fn cmd_gen_user(name: &str, out_path: &str) -> Result<()> {
+    check_root()?;
+    println!("== gen-user: {} ==", name);
+
+    let password = gen_password();
+
+    // 加入 server 配置 (write_users 内含 systemctl restart gnp-hy2)
+    let mut users = read_users()?;
+    if users
+        .iter()
+        .any(|u| u.get("password").and_then(|p| p.as_str()) == Some(password.as_str()))
+    {
+        bail!("密码冲突, 重新生成");
+    }
+    users.push(serde_json::json!({ "name": name, "password": password }));
+    write_users(users)?;
+
+    // 落盘 gnp.cfg
+    let cfg = format!(
+        "# gnp peer config — 由 gnp-server gen-user 生成\n         # 用法: gnp-client peer gnp.cfg\n         user-name = {}\n         server-ip = {}\n         server-port = {}\n         peer-key = {}\n",
+        name, SERVER_IP, HY2_PORT, password
+    );
+    std::fs::write(out_path, &cfg).context(format!("写 {} 失败", out_path))?;
+
+    println!("\n✅ 用户已添加并激活 (gnp-hy2 已重启)");
+    println!("📄 peer 配置已生成: {}", out_path);
+    println!("==================");
+    println!("{}", cfg.trim_end());
+    println!("==================");
+    println!("把 {} 安全地送到客户端后执行: gnp-client peer {}", out_path, out_path);
+    Ok(())
 }
 
 /// 添加用户
