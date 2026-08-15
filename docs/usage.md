@@ -256,6 +256,21 @@ gnp-client config --show
 gnp-client tunnel   # 或旧名 gnp-client tunnel
 ```
 
+### env — CLI 代理环境变量开关（2026-08-15 新增）
+
+CLI 工具（curl/pip/uv/npm/git 等）**不读系统代理**，只认环境变量。本命令输出 eval 装载：
+
+```bash
+eval "$(gnp-client env --on)"    # 当前 shell 立即生效
+eval "$(gnp-client env --off)"   # 取消
+eval "$(gnp-client env --hook)"  # 写入 ~/.zshrc → 得到 gnp-on / gnp-off 快捷函数
+gnp-client env                   # 查看当前 shell 状态
+```
+
+- 直接运行 `env --on`（不经 eval）只打印不生效——终端下会输出引导提示
+- 国内流量无需 no_proxy 白名单：sing-box 按 geosite-cn 内部分流直连
+- Windows PowerShell 等价：`$env:https_proxy='http://127.0.0.1:1080'; $env:http_proxy=$env:https_proxy`
+
 **输出内容**：
 
 1. **隧道配置**（从 config.json 提取）：

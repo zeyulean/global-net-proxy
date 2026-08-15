@@ -92,9 +92,10 @@ gnp-client install \
 gnp-client start    # 启动 sing-box 代理（开机自启）
 gnp-client stop     # 停止
 gnp-client status   # 查看状态（进程/端口/隧道/出口IP）
-gnp-client wg       # 隧道诊断（命令名保留，实际诊断 hy2）
+gnp-client tunnel   # 隧道诊断（兼容旧名 wg）
 gnp-client config --check  # 校验配置安全
 gnp-client test     # 测试代理连通性
+gnp-client env      # CLI 代理环境状态（gnp-on/gnp-off 快捷开关）
 gnp-client update-rules --install-cron  # 每日自动更新规则
 ```
 
