@@ -15,8 +15,14 @@
 
 绿联 AX900 加载序列（bootrom a69c:8d80 → udev 弹出已自动 →）：
 `insmod aic_load_fw.ko`（下载固件，设备变 368b:8d88）→ `insmod aic8800_fdrv.ko` → **wlan1** 出现。
-源码树在 aipro `/mnt/disk/lwboy/projects/drivers/aic8800-ugreen`（git 有全部实验记录）。
+一键脚本：`bash/aic_load.sh`；源码+实验史：`driver/aic8800-ugreen-src/`（tree.tar.gz + git bundle）。
 blacklist（/etc/modprobe.d/aic8800-blacklist.conf）保留——开机不自动加载，需要时手动。
+
+绿联完整恢复清单（系统重刷后）：
+1. `.ko` → 上表两文件部署
+2. `firmware/aic8800D80-firmware.tar.gz` → 解压到 /lib/firmware/（2.1M）
+3. `aic.rules` → /etc/udev/rules.d/（插入时自动把 a69c:5724 存储态弹出为 bootrom）
+4. `bash/aic_load.sh` → 执行加载
 
 vermagic 均为 `5.10.0+ SMP mod_unload aarch64`（仅适用于 OrangePi AIpro 20T 当前内核）。
 
