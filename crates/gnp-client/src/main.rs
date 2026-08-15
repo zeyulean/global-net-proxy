@@ -222,6 +222,24 @@ enum Commands {
         示例:\n  \
         gnp-client recover")]
     Recover,
+    /// CLI 环境变量代理开关 (curl/pip/npm/git 等)
+    #[command(long_about = "为 CLI 工具 (curl/pip/uv/npm/git/docker 等) 输出代理环境变量。\n\n\
+        这些工具不读系统代理设置, 只认环境变量:\n  \
+        http_proxy / https_proxy / all_proxy → 127.0.0.1:1080\n\n\
+        用法:\n          eval \"$(gnp-client env --on)\"    # 当前 shell 生效\n          eval \"$(gnp-client env --off)\"   # 取消\n          eval \"$(gnp-client env --hook)\"  # 装入 gnp-on/gnp-off 快捷函数(放 .zshrc/.bashrc)\n\n\
+        示例 (.zshrc):\n          eval \"$(~/.local/bin/gnp-client env --hook)\"\n\n\
+        注: 国内流量无需加 no_proxy —— sing-box 已按 geosite-cn 分流直连。")]
+    Env {
+        /// 输出 export 环境变量 (eval 用)
+        #[arg(long)]
+        on: bool,
+        /// 输出 unset 环境变量 (eval 用)
+        #[arg(long)]
+        off: bool,
+        /// 输出 gnp-on/gnp-off shell 函数 (eval 用)
+        #[arg(long)]
+        hook: bool,
+    },
     /// 系统代理开关 (macOS 系统代理 / Linux GNOME 代理)
     #[command(long_about = "设置或取消操作系统层面的代理, 让浏览器等 GUI 程序走 sing-box。\n\n\
         平台差异:\n  \
@@ -300,6 +318,7 @@ fn main() -> Result<()> {
                 recover::run()
             }
         }
+        Commands::Env { on, off, hook } => cmd_env(on, off, hook),
         Commands::Proxy { on, off, status } => cmd_proxy(on, off, status),
     }
 }
@@ -525,6 +544,49 @@ fn cmd_test() -> Result<()> {
 }
 
 // --- 辅助函数 ---
+
+/// CLI 环境变量代理开关
+fn cmd_env(on: bool, off: bool, hook: bool) -> Result<()> {
+    let url = "http://127.0.0.1:1080".to_string();
+    let no_proxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16";
+    if on {
+        println!("export http_proxy={}", url);
+        println!("export https_proxy={}", url);
+        println!("export all_proxy=socks5://127.0.0.1:1080");
+        println!("export HTTP_PROXY=${{http_proxy}} HTTPS_PROXY=${{https_proxy}} ALL_PROXY=${{all_proxy}}");
+        println!("export no_proxy={} NO_PROXY=${{no_proxy}}", no_proxy);
+        return Ok(());
+    }
+    if off {
+        for k in ["http_proxy","https_proxy","all_proxy","HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","no_proxy","NO_PROXY"] {
+            println!("unset {}", k);
+        }
+        return Ok(());
+    }
+    if hook {
+        println!("# gnp CLI 代理快捷函数 (由 gnp-client env --hook 生成, eval 装载)");
+        println!("gnp-on()  {{ eval \"$(gnp-client env --on)\"; echo \"🌐 CLI 代理已开 (127.0.0.1:1080) – curl/pip/npm/git 生效\"; }}");
+        println!("gnp-off() {{ eval \"$(gnp-client env --off)\"; echo \"⏹️  CLI 代理已关\"; }}");
+        println!("# 提示: gnp-on 只对当前 shell 及其子进程生效");
+        return Ok(());
+    }
+    // 无参数: 显示当前状态
+    println!("== gnp CLI 代理环境 ==");
+    let mut any = false;
+    for k in ["http_proxy","https_proxy","all_proxy"] {
+        match std::env::var(k) {
+            Ok(v) => { println!("  {} = {} ✅", k, v); any = true; }
+            Err(_) => println!("  {} = (未设置)", k),
+        }
+    }
+    if any {
+        println!("\n当前 shell 已走代理; 取消: eval \"$(gnp-client env --off)\"");
+    } else {
+        println!("\n当前 shell 未走代理。开启: eval \"$(gnp-client env --on)\"");
+        println!("永久快捷: 把 eval \"$(gnp-client env --hook)\" 加入 ~/.zshrc (得到 gnp-on/gnp-off)");
+    }
+    Ok(())
+}
 
 /// 系统代理开关
 fn cmd_proxy(on: bool, off: bool, status: bool) -> Result<()> {

@@ -15,6 +15,22 @@
 - 💻 **Rust CLI**：client + server 统一管理，跨平台（macOS launchd / Linux systemd）
 - 📦 **sing-box 1.13.16**：使用 outbound hysteria2 格式（with_quic 构建）
 
+## CLI 代理（curl/pip/uv/npm/git 等）
+
+CLI 工具不读系统代理设置，只认环境变量。`gnp-client env` 子命令解决：
+
+```bash
+eval "$(gnp-client env --on)"    # 当前 shell 立即生效（curl/pip/npm/git 走 127.0.0.1:1080）
+eval "$(gnp-client env --off)"   # 取消
+eval "$(gnp-client env --hook)"  # 写入 .zshrc/.bashrc → 得到 gnp-on / gnp-off 快捷函数
+gnp-client env                   # 查看当前 shell 代理状态
+```
+
+- 国内流量**无需**配 no_proxy 白名单：sing-box 内部已按 geosite-cn 分流直连
+  （实测 baidu 0.05s 直连 / google 0.19s 走 hy2）
+- Windows PowerShell 等价：`$env:https_proxy='http://127.0.0.1:1080'; $env:http_proxy=$env:https_proxy`
+- GUI/浏览器走 `gnp-client proxy --on`（系统代理），CLI 走 `env --on`，两套互不干扰
+
 ## ⚠️ 安全原则
 
 > **绝不在无带外访问的机器上使用 tun 模式。**
