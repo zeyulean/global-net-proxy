@@ -16,6 +16,10 @@ echo "[entrypoint] sysctl"
 sysctl -w net.ipv4.ip_forward=1
 
 MODE="${ROUTER_MODE:-proxy}"
+BAND="${WIFI_BAND:-5g}"
+HCONF=/etc/hostapd/hostapd.conf
+[ "$BAND" = "24g" ] && HCONF=/etc/hostapd/hostapd-24g.conf
+echo "[entrypoint] 频段: $BAND ($HCONF)"
 echo "[entrypoint] 模式: $MODE"
 
 if [ "$MODE" = "direct" ]; then
@@ -33,8 +37,9 @@ if [ "$MODE" = "direct" ]; then
     echo "[entrypoint] direct: dnsmasq (DHCP + DNS 223.5.5.5)"
     dnsmasq --conf-file=/etc/dnsmasq/dnsmasq.conf --port=53 --server=223.5.5.5 --keep-in-foreground &
     sleep 1
+    ip link set "$IFACE" down 2>/dev/null || true
     echo "[entrypoint] direct: hostapd"
-    exec hostapd /etc/hostapd/hostapd.conf
+    exec hostapd $HCONF
 fi
 
 # ── 代理模式 (gnpon, 默认) ──
@@ -86,5 +91,6 @@ echo "[entrypoint] 启动 dnsmasq (DHCP)"
 dnsmasq --conf-file=/etc/dnsmasq/dnsmasq.conf --keep-in-foreground &
 sleep 1
 
-echo "[entrypoint] 启动 hostapd (AP: $(grep ^ssid= /etc/hostapd/hostapd.conf))"
-exec hostapd /etc/hostapd/hostapd.conf
+ip link set "$IFACE" down 2>/dev/null || true
+echo "[entrypoint] 启动 hostapd ($HCONF)"
+exec hostapd $HCONF

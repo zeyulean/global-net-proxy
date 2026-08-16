@@ -37,9 +37,12 @@ ensure_modules() {
   fi
 }
 
-# 以指定模式重建容器 (proxy|direct)
+cur_mode() { local m=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $CONTAINER 2>/dev/null | grep ROUTER_MODE | cut -d= -f2); echo "${m:-proxy}"; }
+cur_band() { local b=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $CONTAINER 2>/dev/null | grep WIFI_BAND | cut -d= -f2); echo "${b:-5g}"; }
+
+# 以指定模式+频段重建容器 (proxy|direct, 5g|24g)
 recreate() {
-  local mode="$1"
+  local mode="$1" band="${2:-$(cur_band)}"
   ensure_modules || true
   ip link show wlan1 &>/dev/null || { echo "✗ wlan1 不存在"; exit 1; }
   local pass
@@ -47,13 +50,13 @@ recreate() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1
   docker run -d --name "$CONTAINER" --network host --privileged \
     --restart unless-stopped \
-    -e ROUTER_MODE="$mode" -e HY2_PASSWORD="$pass" -e WIFI_IFACE=wlan1 \
+    -e ROUTER_MODE="$mode" -e WIFI_BAND="$band" -e HY2_PASSWORD="$pass" -e WIFI_IFACE=wlan1 \
     aipro-wifi-router:latest >/dev/null
   for i in $(seq 1 15); do
     iw dev wlan1 info 2>/dev/null | grep -q "type AP" && break; sleep 1
   done
   if iw dev wlan1 info 2>/dev/null | grep -q "type AP"; then
-    echo "✅ AP 已就绪 ($mode 模式): $(iw dev wlan1 info | awk '/ssid/{print $2}')"
+    echo "✅ AP 已就绪 ($mode 模式 / $band 频段): $(iw dev wlan1 info | awk '/ssid/{print $2}')"
   else
     echo "✗ 未就绪: docker logs $CONTAINER"; exit 1
   fi
@@ -87,24 +90,33 @@ case "$CMD" in
     ;;
   gnpon)
     echo "== AP 出海代理模式 (透明代理 hy2/QUIC) =="
-    recreate proxy
+    recreate proxy "$(cur_band)"
     ;;
   gnpoff)
     echo "== AP 原通道模式 (NAT 直连, 不走代理) =="
-    recreate direct
+    recreate direct "$(cur_band)"
+    ;;
+  24ch)
+    echo "== AP 切 2.4G ch1（穿墙覆盖优先）=="
+    recreate "$(cur_mode)" 24g
+    ;;
+  5ch)
+    echo "== AP 切 5G ch36（近距离高速）=="
+    recreate "$(cur_mode)" 5g
     ;;
   status)
     echo "== aipro-wifi 状态 =="
     printf "  aic 模块: %s\n" "$(lsmod | grep -q '^aic8800_fdrv' && echo 已加载 || echo 未加载)"
     printf "  wlan1(AP): %s\n" "$(iw dev wlan1 info 2>/dev/null | grep -E 'ssid' | awk '{print $2}' || echo 不存在)"
     printf "  容器: %s\n" "$(docker ps -a --filter name=$CONTAINER --format '{{.Status}}')"
-    printf "  出口模式: %s\n" "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $CONTAINER 2>/dev/null | grep ROUTER_MODE | cut -d= -f2 || echo proxy)"
+    printf "  出口模式: %s | 频段: %s\n" "$(cur_mode)" "$(cur_band)"
     printf "  客户端: %s\n" "$(iw dev wlan1 station dump 2>/dev/null | grep -c Station) 个"
     ;;
   *)
-    echo "用法: aipro-wifi {on|off|status|gnpon|gnpoff}"
+    echo "用法: aipro-wifi {on|off|status|gnpon|gnpoff|24ch|5ch}"
     echo "  gnpon   AP 客户端走透明代理出海(默认)"
     echo "  gnpoff  AP 客户端走原通道 NAT 直连(分流不稳时应急)"
+    echo "  24ch    切 2.4G ch1(穿墙) / 5ch 切 5G ch36(高速); 频段跨模式保持"
     exit 1
     ;;
 esac

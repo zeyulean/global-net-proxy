@@ -11,6 +11,7 @@ RUN chmod +x /usr/local/bin/sing-box
 
 COPY rules/ /etc/sing-box/rules/
 COPY hostapd.conf /etc/hostapd/hostapd.conf
+COPY hostapd-24g.conf /etc/hostapd/hostapd-24g.conf
 COPY dnsmasq.conf /etc/dnsmasq/dnsmasq.conf
 COPY sing-box-tproxy.json.template /etc/sing-box/config.template
 COPY entrypoint.sh /entrypoint.sh
