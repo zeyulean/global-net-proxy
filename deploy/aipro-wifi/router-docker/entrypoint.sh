@@ -44,7 +44,11 @@ fi
 
 # ── 代理模式 (gnpon, 默认) ──
 echo "[entrypoint] 渲染 sing-box 配置"
-sed "s/__HY2_PASSWORD__/${HY2_PASSWORD:?need HY2_PASSWORD env}/" \
+# 密码来源: /run/secrets/hy2_password (run.sh 挂载, 优先) 或 HY2_PASSWORD env (回退)
+if [ -f /run/secrets/hy2_password ]; then
+    read -r HY2_PASSWORD < /run/secrets/hy2_password
+fi
+sed "s/__HY2_PASSWORD__/${HY2_PASSWORD:?need hy2 secret file or HY2_PASSWORD env}/" \
     /etc/sing-box/config.template > /etc/sing-box/config.json
 
 echo "[entrypoint] tproxy 路由规则"

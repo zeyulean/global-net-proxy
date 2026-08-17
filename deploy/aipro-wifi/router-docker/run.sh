@@ -35,6 +35,11 @@ EOF
 echo "=== 2/4 构建镜像 ==="
 docker build -t aipro-wifi-router:latest .
 
+# hy2 密码 → root-only secret 文件（容器经 /run/secrets 只读挂载，不经命令行/环境）
+SECRET_FILE=/mnt/disk/lwboy/.local/share/sing-box/.hy2-secret
+umask 077
+printf '%s' "$HY2_PASS" > "$SECRET_FILE"
+
 echo "=== 3/4 运行（host 网络 + privileged）==="
 docker rm -f aipro-wifi-router 2>/dev/null || true
 docker run -d \
@@ -42,7 +47,7 @@ docker run -d \
   --network host \
   --privileged \
   --restart unless-stopped \
-  -e HY2_PASSWORD="$HY2_PASS" \
+  -v "$SECRET_FILE":/run/secrets/hy2_password:ro \
   -e WIFI_IFACE=wlan1 \
   aipro-wifi-router:latest
 

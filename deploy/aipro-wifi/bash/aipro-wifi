@@ -46,11 +46,17 @@ recreate() {
   ensure_modules || true
   ip link show wlan1 &>/dev/null || { echo "✗ wlan1 不存在"; exit 1; }
   local pass
-  pass=$(python3 -c "import json;c=json.load(open('/mnt/disk/lwboy/.local/share/sing-box/config.json'));print(next(o['password'] for o in c['outbounds'] if o['type']=='hysteria2'))" 2>/dev/null || echo unused)
+  SECRET_FILE=/mnt/disk/lwboy/.local/share/sing-box/.hy2-secret
+  if [ ! -s "$SECRET_FILE" ]; then
+    local pass
+    pass=$(python3 -c "import json;c=json.load(open('/mnt/disk/lwboy/.local/share/sing-box/config.json'));print(next(o['password'] for o in c['outbounds'] if o['type']=='hysteria2'))" 2>/dev/null || echo unused)
+    (umask 077; printf '%s' "$pass" > "$SECRET_FILE")
+  fi
   docker rm -f "$CONTAINER" >/dev/null 2>&1
   docker run -d --name "$CONTAINER" --network host --privileged \
     --restart unless-stopped \
-    -e ROUTER_MODE="$mode" -e WIFI_BAND="$band" -e HY2_PASSWORD="$pass" -e WIFI_IFACE=wlan1 \
+    -v "$SECRET_FILE":/run/secrets/hy2_password:ro \
+    -e ROUTER_MODE="$mode" -e WIFI_BAND="$band" -e WIFI_IFACE=wlan1 \
     aipro-wifi-router:latest >/dev/null
   for i in $(seq 1 15); do
     iw dev wlan1 info 2>/dev/null | grep -q "type AP" && break; sleep 1
