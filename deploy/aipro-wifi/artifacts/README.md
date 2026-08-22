@@ -18,6 +18,22 @@
 一键脚本：`bash/aic_load.sh`；源码+实验史：`driver/aic8800-ugreen-src/`（tree.tar.gz + git bundle）。
 blacklist（/etc/modprobe.d/aic8800-blacklist.conf）保留——开机不自动加载，需要时手动。
 
+## 2026-08-22 TF 重建部署补充（eMMC 损伤换 TF 后）
+
+**关键发现：udev `eject` 是模式切换的触发器**。USB 适配器上电先枚举为 MSC 虚拟盘（a69c:5724, 3.9M），必须 `eject /dev/sda` 后才切换到 WiFi 模式（368b:8d88）。TF 新系统无此规则则永远卡 MSC。`aic.rules` 装到 `/etc/udev/rules.d/99-aic.rules` 即自动处理。
+
+TF 部署完整序列（2026-08-22 验证通过）：
+```
+模块 → /lib/modules/5.10.0+/kernel/drivers/net/wireless/aic8800/
+固件 → tar xzf firmware/aic8800D80-firmware.tar.gz -C /lib/firmware/
+udev → cp aic8800/aic.rules /etc/udev/rules.d/99-aic.rules && udevadm control --reload
+触发 → eject /dev/sda（udev 自动或手动）
+加载 → cfg80211 → mac80211 → aic_load_fw(sleep 3) → aic8800_fdrv → bind 3-1.3:1.0（如未自动）
+自启 → /etc/modules-load.d/aipro-wifi.conf 五模块 + 容器 restart=unless-stopped
+```
+
+**⚠️ 清桩版（a28e6ef）在 TF 系统编译可过但 insmod 报 Unknown symbol**——vendor 内核非导出符号未在 headers 的 Module.symvers 里。原 eMMC 上 08-19 编译的清桩 .ko 能用但已随 eMMC 丢失（TF 启动 eMMC 不可见）。当前 artifacts 里的 fdrv 是带 AICDBG 的版本（~1.4条/s，仅 dmesg RAM 缓冲，零磁盘影响，可接受）。修复需 vendor 完整符号表。
+
 绿联完整恢复清单（系统重刷后）：
 1. `.ko` → 上表两文件部署
 2. `firmware/aic8800D80-firmware.tar.gz` → 解压到 /lib/firmware/（2.1M）
