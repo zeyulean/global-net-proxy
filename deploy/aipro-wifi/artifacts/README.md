@@ -20,6 +20,15 @@ blacklist（/etc/modprobe.d/aic8800-blacklist.conf）保留——开机不自动
 
 ## 2026-08-22 TF 重建部署补充（eMMC 损伤换 TF 后）
 
+**✅ 清桩版编译成功并已存档**：`aic8800_fdrv.clean.ko` + `aic_load_fw.clean.ko`（配套对，2026-08-22 TF 系统编译验证，AICDBG 零输出）。**必须成对替换**——清桩版 fdrv 依赖新版 load_fw 的 `aicwf_rxbuff_*` 符号，与老版混用会报 Unknown symbol。
+
+| 文件 | md5 | 说明 |
+|---|---|---|
+| aic8800_fdrv.clean.ko | b04507dda3e7... | **推荐**：清桩版（AICDBG=0）|
+| aic_load_fw.clean.ko | ecb081cac49e... | **推荐**：配套 load_fw |
+| aic8800_fdrv.ko | 2396b6f4... | 老版（AICDBG ~1.4条/s，兼容备用）|
+| aic_load_fw.ko | c6aa6248... | 老版配套 |
+
 **关键发现：udev `eject` 是模式切换的触发器**。USB 适配器上电先枚举为 MSC 虚拟盘（a69c:5724, 3.9M），必须 `eject /dev/sda` 后才切换到 WiFi 模式（368b:8d88）。TF 新系统无此规则则永远卡 MSC。`aic.rules` 装到 `/etc/udev/rules.d/99-aic.rules` 即自动处理。
 
 TF 部署完整序列（2026-08-22 验证通过）：
@@ -32,7 +41,7 @@ udev → cp aic8800/aic.rules /etc/udev/rules.d/99-aic.rules && udevadm control 
 自启 → /etc/modules-load.d/aipro-wifi.conf 五模块 + 容器 restart=unless-stopped
 ```
 
-**⚠️ 清桩版（a28e6ef）在 TF 系统编译可过但 insmod 报 Unknown symbol**——vendor 内核非导出符号未在 headers 的 Module.symvers 里。原 eMMC 上 08-19 编译的清桩 .ko 能用但已随 eMMC 丢失（TF 启动 eMMC 不可见）。当前 artifacts 里的 fdrv 是带 AICDBG 的版本（~1.4条/s，仅 dmesg RAM 缓冲，零磁盘影响，可接受）。修复需 vendor 完整符号表。
+**⚠️ 清桩版（a28e6ef）在 TF 系统编译可过但 insmod 报 Unknown symbol**——~~vendor 内核非导出符号未在 headers 的 Module.symvers 里~~ **已解决**：根因是 fdrv 和 load_fw 必须成对编译成对替换（aicwf_rxbuff_* 符号在新版 load_fw 中导出）。单换 fdrv 会报 Unknown symbol。
 
 绿联完整恢复清单（系统重刷后）：
 1. `.ko` → 上表两文件部署
