@@ -24,10 +24,10 @@ blacklist（/etc/modprobe.d/aic8800-blacklist.conf）保留——开机不自动
 
 | 文件 | md5 | 说明 |
 |---|---|---|
-| aic8800_fdrv.clean.ko | b04507dda3e7... | **推荐**：清桩版（AICDBG=0）|
-| aic_load_fw.clean.ko | ecb081cac49e... | **推荐**：配套 load_fw |
-| aic8800_fdrv.ko | 2396b6f4... | 老版（AICDBG ~1.4条/s，兼容备用）|
-| aic_load_fw.ko | c6aa6248... | 老版配套 |
+| aic8800_fdrv.ko | 2396b6f4... | **推荐（AP 稳定版）**：带 AICDBG（~1.4条/s 仅 dmesg RAM，无害）|
+| aic_load_fw.ko | c6aa6248... | **推荐**：配套 AP 稳定版 |
+| ~~aic8800_fdrv.clean.ko~~ | b04507dda3e7... | ⚠️ **AP 模式不稳定**：客户端断开后 beacon 无法重启（"key not allowed"+"Failed to set beacon"）。仅客户端模式可用，AP 勿用 |
+| ~~aic_load_fw.clean.ko~~ | ecb081cac49e... | ⚠️ 配套 clean 版（同上问题）|
 
 **关键发现：udev `eject` 是模式切换的触发器**。USB 适配器上电先枚举为 MSC 虚拟盘（a69c:5724, 3.9M），必须 `eject /dev/sda` 后才切换到 WiFi 模式（368b:8d88）。TF 新系统无此规则则永远卡 MSC。`aic.rules` 装到 `/etc/udev/rules.d/99-aic.rules` 即自动处理。
 
