@@ -6,7 +6,7 @@
 //!
 //! 好处: 开机自启、崩溃自动重启 (KeepAlive/Restart=on-failure)、系统级管理。
 
-use crate::platform::{sb_bin, sb_config, Platform};
+use crate::platform::{sb_bin, sb_config, sb_dir, Platform};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::Command;
