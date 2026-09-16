@@ -234,16 +234,34 @@ fn win_task_exists() -> bool {
         .unwrap_or(false)
 }
 
+/// 生成隐形启动 VBS (Windows 控制台程序直接被计划任务拉起会在桌面弹黑窗;
+/// wscript Run(...,0) 完全无窗口, 且保持免管理员设计)
+fn win_hidden_vbs_path() -> PathBuf {
+    sb_dir().join("gnp-run-hidden.vbs")
+}
+
+fn win_write_hidden_vbs() -> Result<PathBuf> {
+    let vbs = win_hidden_vbs_path();
+    let content = format!(
+        "CreateObject(\"WScript.Shell\").Run \"\"\"{}\" run -c \"\"{}\"\"\", 0, False",
+        sb_bin().display(),
+        sb_config().display()
+    );
+    std::fs::write(&vbs, content)
+        .with_context(|| format!("写入隐形启动 VBS 失败: {}", vbs.display()))?;
+    Ok(vbs)
+}
+
 /// 创建计划任务 (当前用户登录时自启; 无需管理员权限)
 ///
 /// 注: 不用 /RU SYSTEM —— 那需要管理员权限创建; 桌面 Windows 场景
 /// ONLOGON(当前用户) 已够用, 且代理写 HKCU 也与用户会话一致。
+/// 通过 wscript VBS 隐形启动, 避免桌面弹黑窗 (2026-09-16 lwwin 实测)。
+/// 管理员环境想要开机即启+强自愈可用 SYSTEM + cmd 循环包壳方案:
+///   Register-ScheduledTask -User SYSTEM, Action=cmd /c "for /l %i in () do (<sb> run -c <cfg> & timeout /t 5 /nobreak >nul)"
 fn win_task_create() -> Result<()> {
-    let tr = format!(
-        "\"{}\" run -c \"{}\"",
-        sb_bin().display(),
-        sb_config().display()
-    );
+    let vbs = win_write_hidden_vbs()?;
+    let tr = format!("wscript.exe \"{}\"", vbs.display());
     let out = Command::new("schtasks")
         .args(["/Create", "/TN", WIN_TASK, "/SC", "ONLOGON", "/TR", &tr, "/F"])
         .output()
