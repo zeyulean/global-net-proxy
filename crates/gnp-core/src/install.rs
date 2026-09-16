@@ -45,10 +45,14 @@ pub fn install_singbox(url: Option<&str>) -> Result<()> {
     println!("📦 下载 sing-box v{} ...", SB_VERSION);
     println!("  URL: {}", url);
 
-    // 下载到临时文件
+    // 下载到临时文件 (后缀必须与实际格式一致: Windows Expand-Archive 按扩展名校验)
     let tmp_dir = dir.join(".download");
     std::fs::create_dir_all(&tmp_dir).ok();
-    let archive = tmp_dir.join("sing-box.tar.gz");
+    let archive = tmp_dir.join(if std::env::consts::OS == "windows" {
+        "sing-box.zip"
+    } else {
+        "sing-box.tar.gz"
+    });
 
     let st = Command::new("curl")
         .args(["-fL", "--retry", "3", "-o"])
@@ -189,9 +193,10 @@ pub fn generate_config(
 ) -> Result<()> {
     let config = serde_json::json!({
         "log": { "level": "info", "timestamp": true },
-        // DNS: fakeip 架构 (2026-08-15 AP 分流故障教训, 见 docs/incident-2026-08-15-dns.md)
-        // - 应答即时返回假 IP, 消除 hijack-dns 直答客户端的 400-1000ms 迟滞
-        // - 连接进来后按域名分流: CN → direct 内部真解析(~20ms), 海外 → hy2 携域名出海无污染
+        // DNS: 无 fakeip —— fakeip 只服务 aipro 路由器 hijack-dns 场景, 标准 mixed 客户端
+        // socks5h 直接携域名分流, 不本地解析 (Mac 生产 1.12.3 同构实测稳定);
+        // 且 sing-box >=1.13 对 legacy dns.fakeip 顶层选项 FATAL 拒启 (2026-09-16 lwwin 实测)
+        // - CN 域名 → dns-direct 真解析; 海外 → hy2 携域名出海, 远端 1.1.1.1 解析无污染
         "dns": {
             "servers": [
                 { "tag": "dns-direct", "type": "udp", "server": "223.5.5.5" },
@@ -201,12 +206,7 @@ pub fn generate_config(
                 { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
             ],
             "final": "dns-remote",
-            "strategy": "ipv4_only",
-            "fakeip": {
-                "enabled": true,
-                "inet4_range": "198.18.0.0/15",
-                "independent_cache": true
-            }
+            "strategy": "prefer_ipv4"
         },
         "inbounds": [{
             "type": "mixed",
