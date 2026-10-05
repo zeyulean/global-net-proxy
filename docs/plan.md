@@ -290,6 +290,9 @@ sudo systemctl disable gnp-hy2; sudo mv /opt/gnp-quic /opt/gnp/backups/gnp-quic-
 16. unload 与 load 之间留 ~400ms：立刻 load 会 EIO（job 还在切换中）
 17. 同机迁移端口互斥：新旧 sing-box 都占 `127.0.0.1:1080`，旧的不让位新的必 crash-loop，而 `launchctl list` 显示 job 存在会让人误判成功 → 顺序必须是"落盘 → 停旧（留 plist 可回滚）→ 装载 → **验证进程+端口+出口 IP** → 才拆旧"
 18. 回滚脚本必须考虑旧 plist 已被移成 `.migrated`：直接 `launchctl load` 原路径是空转，会把机器留在"什么都没装"的状态
+19. **服务端换进程后，客户端长跑实例的 hy2 连接会僵死**：`clash_api` delay 仍报"健康"（113ms），真实流量却全丢，`exit=-`。服务端迁移/重启后**必须逐台重启客户端 sing-box**（`gnpc stop && gnpc start`），别指望 guard 自愈（它看不到这种"假健康"）
+20. 服务端 `cp -a` 搬 sing-box 会**保留 symlink** → `/opt/gnp/bin/sing-box` 变成指向 `/home/lw/.local/share/gnp/lib/sing-box` 的软链，换机器/清 home 树就断。要 `cp -L` 或 `install` 成真文件
+21. 判定"新服务起来了"不能只 `systemctl is-active`：带旧名兜底的检查（`gnps` 或 `gnp-hy2` 任一 active）在迁移窗口会把"旧服务还在跑"误判成"新服务已就绪"（lwtop 实迁踩过，gnps 实际在 crash-loop 却报了 ✅）。必须按名字严格判 + 验端口
 
 ### 7.4 收尾
 

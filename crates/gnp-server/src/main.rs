@@ -390,6 +390,29 @@ fn write_unit() -> Result<()> {
     Ok(())
 }
 
+/// tick.sh + etc/tick.d/gnps-health.sh + crontab 单行 (GNP_HOME=/opt/gnp)
+///
+/// 调度唯一入口 = 同一份 tick.sh (plan D3)。crontab 写当前用户 (root, 因为
+/// tick.d 要能 `systemctl start gnps`) —— 所以 gnps install 必须用 sudo 跑。
+fn install_scheduler() -> Result<()> {
+    let base = home();
+    let tick = scheduler::write_tick_script(&base)?;
+    println!("✅ tick.sh: {}", tick.display());
+
+    let tick_d = base.join("etc/tick.d");
+    std::fs::create_dir_all(&tick_d).ok();
+    let health = tick_d.join("gnps-health.sh");
+    scheduler::write_executable(&health, scheduler::TICK_D_GNPS_HEALTH)?;
+    println!("✅ tick.d: {}", health.display());
+
+    let mut lines = scheduler::purge_gnp_cron_lines(&scheduler::read_crontab());
+    let line = scheduler::server_cron_line(&base);
+    lines.push(line.clone());
+    scheduler::write_crontab(&lines)?;
+    println!("✅ crontab 单行: {}", line);
+    Ok(())
+}
+
 // --- 命令 ---
 
 fn cmd_install(config: Option<&str>) -> Result<()> {
@@ -410,23 +433,86 @@ fn cmd_install(config: Option<&str>) -> Result<()> {
     write_config(&s)?;
     write_unit()?;
 
-    // 启动: 新服务先起, 验证后再 disable 旧 gnp-hy2
-    println!("🚀 启动 gnps...");
+    // 切换服务: 同机同端口 —— 新旧都占 5766/udp, 旧的不让位, gnps 必 crash-loop。
+    // (systemctl 只看 job 存在会误判; hy2_server_active() 还认旧名 gnp-hy2, 更会误判)
+    // 所以顺序: 停旧(保留 unit 可回滚) → 起新 → 严格验证 gnps 自身 + 端口 → 才拆旧
+    let legacy = platform::legacy_server_dir();
+    let had_legacy = tunnel::service_active_named("gnp-hy2");
+    if had_legacy {
+        println!("🚀 旧 gnp-hy2 在跑, 先让它让位 5766 (unit 保留可回滚)...");
+        let _ = Command::new("systemctl").args(["stop", "gnp-hy2"]).status();
+        for _ in 0..30 {
+            if !tunnel::hy2_port_listening(s.server.hy2_port) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if tunnel::hy2_port_listening(s.server.hy2_port) {
+            println!("   ⚠️  5766 仍被占 —— 可能有别的进程持有, 继续尝试");
+        }
+    }
+
+    println!("🚀 启动 {}...", scheduler::SYSTEMD_SERVER);
     let _ = Command::new("systemctl").args(["daemon-reload"]).status();
     let _ = Command::new("systemctl").args(["enable", scheduler::SYSTEMD_SERVER]).status();
     let _ = Command::new("systemctl").args(["restart", scheduler::SYSTEMD_SERVER]).status();
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    if tunnel::hy2_server_active() && tunnel::hy2_port_listening(s.server.hy2_port) {
-        println!("✅ gnps active, UDP {} 监听中", s.server.hy2_port);
-    } else {
-        bail!("gnps 未正常起来 (systemctl status {} 看日志); 旧 gnp-hy2 未拆, 可回退", scheduler::SYSTEMD_SERVER);
+
+    // 严格验证: 只认 gnps 自身 (不接受旧名), 且端口真在听 (最多 15s)
+    let mut ok = false;
+    for _ in 0..30 {
+        if tunnel::service_active_named(scheduler::SYSTEMD_SERVER)
+            && tunnel::hy2_port_listening(s.server.hy2_port)
+        {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
+    if !ok {
+        let _ = Command::new("systemctl").args(["stop", scheduler::SYSTEMD_SERVER]).status();
+        if had_legacy {
+            // 回滚: 把旧服务装回去, 客户端不至于全断
+            let _ = Command::new("systemctl").args(["start", "gnp-hy2"]).status();
+            println!("↩︎  已回滚: 旧 gnp-hy2 已重新拉起");
+        }
+        bail!(
+            "{} 未通过验证 (服务不 active 或 UDP {} 未监听)。看 `journalctl -u {} -n 30`",
+            scheduler::SYSTEMD_SERVER,
+            s.server.hy2_port,
+            scheduler::SYSTEMD_SERVER
+        );
+    }
+    println!("✅ {} active, UDP {} 监听中", scheduler::SYSTEMD_SERVER, s.server.hy2_port);
+
+    // 验证通过 → 才拆旧: disable + 移走 unit + 归档旧目录
+    for line in scheduler::disable_legacy_systemd() {
+        println!("   - {}", line);
+    }
+    if legacy.exists() {
+        let dest = base.join("backups").join("gnp-quic-legacy");
+        if dest.exists() {
+            println!("   backups/gnp-quic-legacy 已存在, {} 保留待人工确认", legacy.display());
+        } else {
+            match std::fs::rename(&legacy, &dest) {
+                Ok(()) => println!("   {} → {}", legacy.display(), dest.display()),
+                Err(e) => println!("   ⚠️  移走 {} 失败 ({}), 保留原处", legacy.display(), e),
+            }
+        }
+    }
+    let old_unit = Path::new("/etc/systemd/system/gnp-hy2.service");
+    if old_unit.exists() {
+        let _ = std::fs::rename(old_unit, old_unit.with_extension("service.disabled"));
+        let _ = Command::new("systemctl").args(["daemon-reload"]).status();
+    }
+
+    install_scheduler()?;
 
     println!("\n✅ 部署完成!");
     println!("   服务: {} (systemd)", scheduler::SYSTEMD_SERVER);
     println!("   端口: {}/udp  (ufw + 云安全组都要放行)", s.server.hy2_port);
     println!("   配置: {}", toml_path().display());
     println!("   证书: {}", cert_crt().display());
+    println!("   调度: tick.sh (crontab 单行, GNP_HOME={})", base.display());
     println!("\n加用户: sudo gnps gen-user --name <名>   (出 gnp.cfg, 客户端 `gnpc peer gnp.cfg`)");
     Ok(())
 }

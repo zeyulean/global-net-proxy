@@ -58,6 +58,18 @@ pub fn test_proxy(proxy: &str, url: &str, timeout_s: u64) -> Result<(String, u64
     Ok((code, elapsed))
 }
 
+/// 严格按名字判 systemd 服务是否 active (只看这个名字, 不含旧名兜底)
+///
+/// 用于"新服务是否真的起来了"的判定 —— 带旧名兜底的版本会在迁移窗口里
+/// 把"旧服务还在跑"误判成"新服务已就绪" (2026-10-05 lwtop 实迁踩过)。
+pub fn service_active_named(name: &str) -> bool {
+    Command::new("systemctl")
+        .args(["is-active", name])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+        .unwrap_or(false)
+}
+
 /// 检查 server 端 sing-box hysteria2 服务是否激活
 ///
 /// systemd `gnps` 状态, 或 (迁移窗口内) 旧名 `gnp-hy2`。
