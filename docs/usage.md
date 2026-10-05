@@ -9,24 +9,27 @@
 ## 目录
 
 - [快速开始](#快速开始)
-- [gnp-client 命令详解](#gnp-client-命令详解)
+- [gnpc 命令详解](#gnpc-命令详解)
   - [start — 启动代理](#start--启动代理)
   - [stop — 停止代理](#stop--停止代理)
   - [status — 查看状态](#status--查看状态)
   - [config — 查看/校验配置](#config--查看校验配置)
   - [wg — Hysteria2 隧道诊断](#wg--hysteria2-隧道诊断)
   - [test — 测试代理连通性](#test--测试代理连通性)
-  - [install — 安装 sing-box + 生成配置](#install--安装-sing-box--生成配置)
+  - [init — 生成 config.toml](#init--生成-configtoml)
+  - [install — 按 config.toml 装齐](#install--按-configtoml-装齐)
+  - [migrate — 旧布局一键迁移](#migrate--旧布局一键迁移)
+  - [install-scheduler — 装/卸调度](#install-scheduler--装载调度)
   - [双通道架构与自动降级](#双通道架构与自动降级2026-10-05-新增)
   - [probe — 主动诊断](#probe--主动诊断hy2-握手--mtu-扫描)
   - [switch — 手动通道切换](#switch--手动通道切换)
   - [guard — 通道看门狗](#guard--通道看门狗退避探测--故障冻结--告警)
   - [register — 自动注册新机器](#register--自动注册新机器)
-  - [update-rules — 规则集更新 + 守护](#update-rules--规则集更新--守护)
+  - [rules-update — 规则集日更](#rules-update--规则集日更)
   - [cleanup — 应急清理](#cleanup--应急清理)
   - [recover — 断网恢复](#recover--断网恢复)
   - [proxy — 系统代理开关](#proxy--系统代理开关)
-- [gnp-server 命令详解](#gnp-server-命令详解)
+- [gnps 命令详解](#gnps-命令详解)
   - [install — 安装 Hysteria2 server](#install--安装-hysteria2-server)
   - [uninstall — 卸载 server](#uninstall--卸载-server)
   - [status — 查看状态](#status--查看状态-1)
@@ -57,16 +60,23 @@ cd global-net-proxy
 bash bash/install.sh
 
 # 验证
-gnp-client --version   # gnp-client 0.1.0
-gnp-server --version   # gnp-server 0.1.0
+gnpc --version   # gnpc 0.1.0
+gnps --version   # gnps 0.1.0
 ```
 
 ### 第 1 步：部署 Server（海外节点）
 
 ```bash
-sudo gnp-server install            # 安装 Hysteria2 (QUIC) server + 开机自启
-sudo gnp-server add-user macbook   # 为每台客户端机器生成密码
-sudo gnp-server pregen 20          # 预生成 20 个用户密码备用
+# 唯一事实源: deploy/hosts/lwtop-server.toml → /opt/gnp/config.toml
+# (8 个用户 / UDP 5766 / salamander obfs 都在这份 toml 里)
+scp deploy/hosts/lwtop-server.toml lwtop:/tmp/
+ssh lwtop 'sudo install -m 600 /tmp/lwtop-server.toml /opt/gnp/config.toml
+           sudo /opt/gnp/bin/gnps install --config /opt/gnp/config.toml'
+# gnps install = 渲染 config.json + sing-box check + gnps.service + tick 调度 + 开机自启
+
+sudo /opt/gnp/bin/gnps gen-user --name macbook  # 加用户 + 出 gnp.cfg (含 5766 + obfs)
+sudo /opt/gnp/bin/gnps pregen 20                 # 预生成 20 个用户密码备用
+# ⚠️ hy2 端口改动必须 ufw + 云安全组双侧, 且 ufw 持久化 (禁裸 iptables)
 ```
 
 ### 第 2 步：部署 Client（本机）
@@ -74,17 +84,22 @@ sudo gnp-server pregen 20          # 预生成 20 个用户密码备用
 ```bash
 # 方式 A: 自动注册（推荐）
 export GITEE_TOKEN=xxxx
-gnp-client register my-client-id
-# 然后在 server 上: sudo gnp-server activate my-client-id
+gnpc register my-client-id
+# 然后在 server 上: sudo gnps activate my-client-id
 
-# 方式 B: 手动安装
-gnp-client install \
+# 方式 B: 手动安装 (推荐: 配置全在 config.toml, 唯一事实源)
+gnpc init \
   --server 8.209.203.17 \
-  --password <HY2_PASSWORD> \
-  --server-port 443
+  --hy2-password <HY2_PASSWORD> \
+  --obfs-password <OBFS_PASSWORD> \
+  --listen 127.0.0.1        # mac 单机自用; 局域网服务机填 0.0.0.0
+gnpc install                 # 下载 sing-box + 规则集, 渲染 config.json, 装常驻服务
+gnpc install-scheduler       # 装调度 (tick.sh + launchd/crontab), 并清旧
+gnpc start
 
-# 启动代理
-gnp-client start
+# 方式 C: 从旧布局迁移 (存量机器)
+scp deploy/hosts/<host>.toml <host>:~/.local/gnp/config.toml
+scp gnpc <host>:/tmp/ && ssh <host> '/tmp/gnpc migrate --config ~/.local/gnp/config.toml'
 ```
 
 ### 第 3 步：设置代理
@@ -93,13 +108,13 @@ gnp-client start
 
 ```bash
 # 开启系统代理（Safari/Chrome 等自动走代理，会弹管理员授权窗口）
-gnp-client proxy --on
+gnpc proxy --on
 
 # 关闭
-gnp-client proxy --off
+gnpc proxy --off
 
 # 查看状态
-gnp-client proxy --status
+gnpc proxy --status
 ```
 
 #### Linux
@@ -111,7 +126,7 @@ export https_proxy=http://127.0.0.1:1080
 export all_proxy=socks5://127.0.0.1:1080
 
 # 方式 B: GNOME 系统代理
-gnp-client proxy --on    # 通过 gsettings 设置
+gnpc proxy --on    # 通过 gsettings 设置
 
 # 方式 C: 单次使用
 curl -x socks5h://127.0.0.1:1080 https://www.google.com
@@ -120,23 +135,26 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 ### 第 4 步：验证
 
 ```bash
-gnp-client status    # 查看状态
-gnp-client test      # 测试代理连通性
-gnp-client tunnel    # Hysteria2 隧道诊断 (兼容旧名 wg)
+gnpc status    # 查看状态
+gnpc test      # 测试代理连通性
+gnpc tunnel    # Hysteria2 隧道诊断 (兼容旧名 wg)
 ```
 
 ---
 
-## gnp-client 命令详解
+## gnpc 命令详解
 
-gnp-client 管理本机 sing-box mixed 代理（hysteria2/QUIC 隧道），共 **12 个子命令**。
+gnpc 管理本机 sing-box mixed 代理（hysteria2/QUIC 隧道），共 **12 个子命令**。
 
 > **安全原则**：本工具只使用 mixed 代理模式（socks5+http on 127.0.0.1:1080），不修改系统路由表，零断网风险。绝不用 tun 模式。
 >
-> **数据目录**：`~/.local/share/sing-box/`
-> - 二进制：`sing-box`
-> - 配置：`config.json`
-> - 规则集：`rules/*.srs`
+> **部署根**：`~/.local/gnp/`（`$GNP_HOME` 可覆盖）
+> ```
+> bin/{gnpc,sing-box,tick.sh}   config.toml ← 唯一事实源   config.json ← 生成物
+> etc/tick.d/*.sh   rules/*.srs   secrets/ (0600)   var/ (日志/状态/cache.db)   backups/
+> ```
+> **`config.toml` 是唯一事实源**：`config.json` / 服务单元 / `tick.sh` / 容器 secrets
+> 全是生成物，**勿手改**。改配置 → 改 toml → `gnpc install` → 重启服务。
 
 ---
 
@@ -145,7 +163,7 @@ gnp-client 管理本机 sing-box mixed 代理（hysteria2/QUIC 隧道），共 *
 启动 sing-box 代理服务，并注册为开机自启。
 
 ```bash
-gnp-client start
+gnpc start
 ```
 
 **行为说明**：
@@ -162,7 +180,7 @@ gnp-client start
 **示例**：
 
 ```bash
-gnp-client start
+gnpc start
 # ♻️  启动 sing-box (macos)...
 # ✅ sing-box 已启动 (socks5+http on 127.0.0.1:1080)
 ```
@@ -174,7 +192,7 @@ gnp-client start
 停止 sing-box 代理服务，卸载开机自启并杀掉残留进程。
 
 ```bash
-gnp-client stop
+gnpc stop
 ```
 
 **行为说明**：
@@ -189,7 +207,7 @@ gnp-client stop
 显示完整的代理运行状态。
 
 ```bash
-gnp-client status
+gnpc status
 ```
 
 **输出内容**：
@@ -206,7 +224,7 @@ gnp-client status
 **示例输出**：
 
 ```
-== gnp-client 状态 (macos) ==
+== gnpc 状态 (macos) ==
 
 📦 安装:
   sing-box 二进制: 已安装 ✅
@@ -233,10 +251,10 @@ gnp-client status
 
 ```bash
 # 校验配置安全性
-gnp-client config --check
+gnpc config --check
 
 # 显示完整配置内容 (JSON)
-gnp-client config --show
+gnpc config --show
 ```
 
 **校验项**：
@@ -257,7 +275,7 @@ gnp-client config --show
 （2026-08-15 起主命令为 `tunnel`，旧名 `wg` 保留为兼容别名——wg 时代历史沿用。）
 
 ```bash
-gnp-client tunnel   # 或旧名 gnp-client tunnel
+gnpc tunnel   # 或旧名 gnpc tunnel
 ```
 
 ### env — CLI 代理环境变量开关（2026-08-15 新增）
@@ -265,10 +283,10 @@ gnp-client tunnel   # 或旧名 gnp-client tunnel
 CLI 工具（curl/pip/uv/npm/git 等）**不读系统代理**，只认环境变量。本命令输出 eval 装载：
 
 ```bash
-eval "$(gnp-client env --on)"    # 当前 shell 立即生效
-eval "$(gnp-client env --off)"   # 取消
-eval "$(gnp-client env --hook)"  # 写入 ~/.zshrc → 得到 gnp-on / gnp-off 快捷函数
-gnp-client env                   # 查看当前 shell 状态
+eval "$(gnpc env --on)"    # 当前 shell 立即生效
+eval "$(gnpc env --off)"   # 取消
+eval "$(gnpc env --hook)"  # 写入 ~/.zshrc → 得到 gnp-on / gnp-off 快捷函数
+gnpc env                   # 查看当前 shell 状态
 ```
 
 - 直接运行 `env --on`（不经 eval）只打印不生效——终端下会输出引导提示
@@ -307,7 +325,7 @@ gnp-client env                   # 查看当前 shell 状态
 快速测试代理是否可用。
 
 ```bash
-gnp-client test
+gnpc test
 ```
 
 **测试内容**：
@@ -320,38 +338,117 @@ gnp-client test
 
 ---
 
-### install — 安装 sing-box + 生成配置
+### init — 生成 config.toml（唯一事实源）
 
-下载 sing-box 二进制、下载规则集、生成 mixed+hysteria2 配置。
+交互式或纯 flag 生成 `~/.local/gnp/config.toml`。**这是配置的唯一入口**：
+`config.json` / 服务单元 / `tick.sh` / 容器 secrets 全由它渲染，勿手改生成物。
 
 ```bash
-gnp-client install \
-  --server <SERVER_IP> \
-  --password <HY2_PASSWORD> \
-  [--server-port 443] \
-  [--bin-only]
+gnpc init \
+  [--server <IP>] [--hy2-password <密码>] [--obfs-password <obfs密码>] \
+  [--hy2-port 5766] [--listen 127.0.0.1] \
+  [--hosts 'aipro.host=192.168.1.2,lwtop.host=8.209.203.17'] \
+  [--out <路径>] [--force]
 ```
 
-**参数说明**：
+**要点**：
 
-| 参数 | 必填 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--server` | ✅ | — | 远端 hysteria2 server 地址（IP 或域名） |
-| `--password` | ✅ | — | hysteria2 认证密码 |
-| `--server-port` | ❌ | 443 | server 端口（hysteria2/QUIC UDP） |
-| `--bin-only` | ❌ | false | 只下载 sing-box，不生成配置 |
+- 给了 `--server` + `--hy2-password` 就是非交互（适合 scp 到目标机直接落盘）；
+  缺项会从旧 `config.json` 推断，或进交互提问
+- 已存在的 `config.toml` **不覆盖**（要重写加 `--force`）
+- 缺省端口 `hy2_port = 5766`（`GNP_PORT`，代码默认值）
+- `ssh_key` 支持 `~`（由 gnpc 展开）；`ssh_user` 置空 = 关闭 ssh 兜底；
+  `clash_api_port = 0` = 关闭 clash_api
+- `[client.hosts]` 的域名含点，**key 必须加引号**：`"aipro.host" = "1.2.3.4"`
+  （不加引号 TOML 会当成嵌套表）
+
+### install — 按 config.toml 装齐
+
+```bash
+gnpc install [--config <config.toml 路径>] [--bin-only]
+```
+
+事实源优先级：`--config` > `$GNP_HOME/config.toml`。
+
+**行为**：
+
+1. sing-box 未安装则下载 **v1.13.16**（直连不通时自动借本地代理 `127.0.0.1:1080`）
+2. 下载规则集（geosite-cn、geoip-cn、google、github、openai、anthropic、docker）
+3. **渲染 `config.json`**：双通道形态（selector → urltest → hy2 + ssh 兜底），
+   `cache_file` 落 `var/cache.db`（绝对路径，systemd CWD=/ 不可写）
+4. **`sing-box check` 校验生成物**——不过就不算装成功
+5. 写 `secrets/hy2-password` + `secrets/hy2-obfs`（0600 **带换行**；容器挂载源）
+6. Linux 写 systemd `gnpc.service`（需 root；有免密 sudo 就借，没有则打印精确命令）
+
+> 调度（`tick.sh` + launchd/crontab）由 `gnpc install-scheduler` 负责——
+> 两者生命周期不同，故意不合并。
+
+### migrate — 旧布局一键迁移
+
+把 v1 的 `~/.local/share/sing-box` 迁到 v2 的 `~/.local/gnp`，一条命令完成。
+
+```bash
+gnpc migrate [--config deploy/hosts/<host>.toml] [--dry-run]
+```
+
+**事实源优先级**：`--config` > 已有 `$GNP_HOME/config.toml` > 解析旧 `config.json`。
+> 用已有/`--config` 给的 toml 时是**逐字拷贝**（不重新序列化），
+> 这样各机 `config.toml` 与 `deploy/hosts/<host>.toml` 的 md5 一致（可交叉校验）。
+
+**顺序是硬要求**（同机同端口，旧的不让位新的必 crash-loop）：
+
+```
+落盘 (tick.sh/plist/unit) → 停旧常驻(保留单元可回滚) → 装载新
+  → 三重验证(进程在跑 + 1080 在听 + 出口 IP 真是服务端)
+  → 失败: 自动把旧单元装回去并中止
+  → 通过: 才清旧残留 + 旧目录挪 backups/legacy-singbox/
+```
+
+**幂等**：可重复跑。`--dry-run` 只报告将要做什么，不落盘不动服务。
+
+### install-scheduler — 装/卸调度
+
+调度唯一入口 = `tick.sh`（全部机器同一份，编进二进制；改 `deploy/scheduler/tick.sh`
+需重编）。每分钟一次：Mac = launchd `com.gnpc.tick`（StartInterval=60），
+Linux = crontab **一行**（`GNP_HOME=<base> <base>/bin/tick.sh`）。
+
+```bash
+gnpc install-scheduler            # 幂等装
+gnpc install-scheduler --uninstall  # 只拆调度, 不停常驻 sing-box
+```
+
+**同时清旧**（§7.1 验收 2/4 要求"无残留"）：`com.gnp.*` unload + 移走、
+旧 cron 行剔除（保留新 tick 行）、`gnp-proxy`/`gnp-hy2` disable、
+aipro 的 `--user sing-box` disable。
+
+**约定**：组件**缺席 = 真静默**（设计行为，服务端没有 gnpc）；组件**失败 = 落
+`var/tick.log` WARN**（不允许无声）。告警只有 guard 降级/恢复事件。
+
+### rules-update — 规则集日更
+
+重新下载规则集并重启 sing-box 加载。正常无需手动跑：`tick.sh` 在 04 点窗口调它，
+成功才写当日标记（`var/.rules-updated-<date>`），失败落 WARN 明日再试。
+
+```bash
+gnpc rules-update          # 旧名 update-rules 仍可用 (alias)
+```
+
+下载通道：直连优先，不通自动借本地代理 `127.0.0.1:1080`
+（GitHub raw 在国内直连不通，而这些机器唯一稳定的出站就是自己的代理）。
 
 **行为说明**：
 
-1. 如果 sing-box 未安装，自动下载 sing-box **v1.13.16**（with_quic 构建，原生支持 hysteria2）
+1. sing-box 未安装则下载 **v1.13.16**
 2. 下载规则集（geosite-cn、geoip-cn、google、github、openai 等）
-3. 生成 `config.json`（mixed + hysteria2 outbound 格式）
-4. Linux 上自动安装 systemd 系统级服务（开机自启）
+3. 从 `config.toml` 渲染 `config.json`（双通道：selector → urltest → hy2 + ssh 兜底）
+4. `sing-box check` 校验生成物
+5. 写 `secrets/`（0600 带换行）
+6. Linux 写 systemd `gnpc.service`（开机自启）
 
 **示例**：
 
 ```bash
-gnp-client install \
+gnpc install \
   --server 8.209.203.17 \
   --password <你的密码> \
   --server-port 443
@@ -384,9 +481,9 @@ route.final → proxy-out (selector, 手动 override 入口)
 把"代理时通时不通/无声超时"的标准排查一条命令化（排障范式见 plan 附录）：
 
 ```bash
-gnp-client probe                # 全套: 握手测试 + 载荷尺寸扫描
-gnp-client probe --skip-mtu     # 只测 hy2 握手
-gnp-client probe --sizes 1200,1240,1280 --count 20
+gnpc probe                # 全套: 握手测试 + 载荷尺寸扫描
+gnpc probe --skip-mtu     # 只测 hy2 握手
+gnpc probe --sizes 1200,1240,1280 --count 20
 ```
 
 1. **hy2 握手测试**：起临时 sing-box 实例（独立端口、无 cache_file），经真实路径
@@ -400,10 +497,10 @@ gnp-client probe --sizes 1200,1240,1280 --count 20
 urltest 按"最快"自动选路；switch 提供 manual override：
 
 ```bash
-gnp-client switch        # 查看当前通道（selector 默认 + 热状态）
-gnp-client switch ssh    # 强制 TCP 兜底（如怀疑 QoS / hy2 半死）
-gnp-client switch hy2    # 强制 QUIC
-gnp-client switch auto   # 交还 urltest 自动选路（默认）
+gnpc switch        # 查看当前通道（selector 默认 + 热状态）
+gnpc switch ssh    # 强制 TCP 兜底（如怀疑 QoS / hy2 半死）
+gnpc switch hy2    # 强制 QUIC
+gnpc switch auto   # 交还 urltest 自动选路（默认）
 ```
 
 实现 = clash_api 热切换（立即生效）+ config selector default 写回（重启仍生效）。
@@ -415,8 +512,8 @@ gnp-client switch auto   # 交还 urltest 自动选路（默认）
 cron 驱动，Linux 用 cron：
 
 ```bash
-gnp-client guard                 # 手动跑一次 tick（调试）
-gnp-client guard --install-cron  # Linux 装 cron（每分钟）; macOS 建议用 launchd agent
+gnpc guard                 # 手动跑一次 tick（调试）
+gnpc guard --install-cron  # Linux 装 cron（每分钟）; macOS 建议用 launchd agent
 ```
 
 行为：
@@ -427,7 +524,7 @@ gnp-client guard --install-cron  # Linux 装 cron（每分钟）; macOS 建议�
 3. 连续 2 次失败 → 冻结到 ssh-out（selector 强制）+ 重启 sing-box（确保兜底通道干净）+ 告警
 4. 恢复探测通过 → 自动解冻交还 urltest + 告警
 5. 告警渠道：`GNP_ALERT_CMD` 环境变量钩子 > macOS 系统通知 > Linux notify-send，
-   始终落 `~/.local/share/sing-box/guard.log`；持续故障 30min 限频
+   始终落 `~/.local/gnp/var/guard.log`；持续故障 30min 限频
 
 ---
 
@@ -440,16 +537,16 @@ gnp-client guard --install-cron  # Linux 装 cron（每分钟）; macOS 建议�
 export GITEE_TOKEN=xxxx
 
 # 自动注册（client_id 默认用 hostname）
-gnp-client register
+gnpc register
 
 # 指定 client_id
-gnp-client register --client-id macbook
+gnpc register --client-id macbook
 
 # 只查看用户密码池状态，不修改
-gnp-client register --list
+gnpc register --list
 
 # 试运行（看会选中哪个用户，不实际修改）
-gnp-client register --dry-run
+gnpc register --dry-run
 ```
 
 **参数说明**：
@@ -472,7 +569,7 @@ gnp-client register --dry-run
 8. 安装 systemd 服务（Linux）
 9. 验证配置
 
-> ⚠️ **重要**：register 完成后，需要在 **server** 上执行 `gnp-server activate <client_id>`，将密码加入 gnp-hy2 运行时。
+> ⚠️ **重要**：register 完成后，需要在 **server** 上执行 `gnps activate <client_id>`，将密码加入 gnp-hy2 运行时。
 
 ---
 
@@ -482,15 +579,15 @@ gnp-client register --dry-run
 
 ```bash
 # 检查 sing-box 是否运行，挂了就重启（默认行为）
-gnp-client update-rules
+gnpc update-rules
 # 等价于
-gnp-client update-rules --check
+gnpc update-rules --check
 
 # 强制更新规则集（重启 sing-box 加载最新 remote rule-set）
-gnp-client update-rules --update
+gnpc update-rules --update
 
 # 安装 cron 任务（每天 04:00 自动检查）
-gnp-client update-rules --install-cron
+gnpc update-rules --install-cron
 ```
 
 **参数说明**：
@@ -506,7 +603,7 @@ gnp-client update-rules --install-cron
 安装后会添加一条 crontab：
 
 ```
-0 4 * * * /path/to/gnp-client update-rules check >> ~/.local/share/sing-box/cron.log 2>&1
+* * * * * GNP_HOME=/home/<user>/.local/gnp /home/<user>/.local/gnp/bin/tick.sh
 ```
 
 ---
@@ -516,7 +613,7 @@ gnp-client update-rules --install-cron
 彻底清理 sing-box 所有残留。参考 [aipro 断网事故](incident-2026-08-10.md)。
 
 ```bash
-gnp-client cleanup
+gnpc cleanup
 ```
 
 **清理步骤（6 步）**：
@@ -526,9 +623,9 @@ gnp-client cleanup
 3. **清理 tun 接口**：删除 gnp0、tun0
 4. **清理策略路由**：删除 priority 9000-9010 的 ip rule，flush table 2022
 5. **恢复默认路由**：探测网关并恢复
-6. **备份数据目录**：`~/.local/share/sing-box/` → `sing-box.disabled-<timestamp>`
+6. **备份数据目录**：`~/.local/gnp/` → `gnp.disabled-<timestamp>`
 
-> ⚠️ 这条命令会**彻底清除** sing-box，之后需要重新 `gnp-client install` 或 `register`。
+> ⚠️ 这条命令会**彻底清除** sing-box，之后需要重新 `gnpc install` 或 `register`。
 
 ---
 
@@ -537,7 +634,7 @@ gnp-client cleanup
 sing-box tun 模式破坏路由表后的网络恢复工具。
 
 ```bash
-gnp-client recover
+gnpc recover
 ```
 
 **恢复步骤（5 步）**：
@@ -559,16 +656,16 @@ gnp-client recover
 
 ```bash
 # 查看当前状态
-gnp-client proxy --status
+gnpc proxy --status
 
 # 开启系统代理
-gnp-client proxy --on
+gnpc proxy --on
 
 # 关闭系统代理
-gnp-client proxy --off
+gnpc proxy --off
 
 # 无参数：显示状态和用法
-gnp-client proxy
+gnpc proxy
 ```
 
 **参数说明**：
@@ -599,27 +696,27 @@ gnp-client proxy
 
 ```bash
 # server 端（lwtop）：
-sudo gnp-server gen-user --name macbook          # 生成密码+写入配置+重启 hy2+落盘 gnp.cfg
-sudo gnp-server gen-user --name vmwin --out /tmp/vmwin.cfg
+sudo gnps gen-user --name macbook          # 生成密码+写入配置+重启 hy2+落盘 gnp.cfg
+sudo gnps gen-user --name vmwin --out /tmp/vmwin.cfg
 
 # 客户端（任意平台）：
-gnp-client peer gnp.cfg                          # 解析 cfg → 装 sing-box/规则/生成配置/装服务
-gnp-client start && gnp-client test              # 上线验证
+gnpc peer gnp.cfg                          # 解析 cfg → 装 sing-box/规则/生成配置/装服务
+gnpc start && gnpc test              # 上线验证
 ```
 
 gnp.cfg 字段：`user-name / server-ip / server-port / peer-key`
 ⚠️ peer 会覆盖 config.json——手工精调过的节点（如 deploy/config-mac）先备份。
 
-## gnp-server 命令详解
+## gnps 命令详解
 
-gnp-server 管理 Hysteria2 (QUIC) server（sing-box hysteria2 inbound，systemd 服务 `gnp-hy2`），共 **7 个子命令**。
+gnps 管理 Hysteria2 (QUIC) server（sing-box hysteria2 inbound，systemd 服务 `gnp-hy2`），共 **7 个子命令**。
 
-> **所有命令需要 root 权限**（写 `/opt/gnp-quic`、控制 systemd），请用 `sudo` 运行。
+> **所有命令需要 root 权限**（写 `/opt/gnp`、控制 systemd），请用 `sudo` 运行。
 >
-> **配置文件**：`/opt/gnp-quic/config.json`
+> **唯一事实源**：`/opt/gnp/config.toml`（`config.json` 由它渲染，勿手改）
 > **端口**：443（UDP/QUIC）
 > **服务**：`gnp-hy2`
-> **证书**：`/opt/gnp-quic/certs/`（自签）
+> **证书**：`/opt/gnp/certs/`（自签）
 
 ---
 
@@ -628,14 +725,14 @@ gnp-server 管理 Hysteria2 (QUIC) server（sing-box hysteria2 inbound，systemd
 安装 Hysteria2 (QUIC) server，包括 sing-box 二进制、自签证书、配置、systemd 服务、防火墙放行。
 
 ```bash
-sudo gnp-server install
+sudo gnps install
 ```
 
 **安装步骤**：
 
-1. **下载 sing-box**（with_quic 构建）到 `/opt/gnp-quic/sing-box`
-2. **生成自签证书**：`openssl req -x509` 生成 `/opt/gnp-quic/certs/server.crt` / `server.key`（10 年有效期）
-3. **写 config.json**：`/opt/gnp-quic/config.json`（hysteria2 inbound，listen 443，users 空数组）
+1. **下载 sing-box**（with_quic 构建）到 `/opt/gnp/bin/sing-box`
+2. **生成自签证书**：`openssl req -x509` 生成 `/opt/gnp/certs/server.crt` / `server.key`（10 年有效期）
+3. **渲染 config.json**：从 `config.toml` 渲染（hysteria2 inbound，listen 5766，users 来自 `[[users]]`），并跑 `sing-box check`
 4. **写 systemd 单元**：`/etc/systemd/system/gnp-hy2.service`（`sing-box run -c <config>`）
 5. **启动服务**：`systemctl enable --now gnp-hy2`
 6. **放行 UDP 443**：`iptables -I INPUT -p udp --dport 443 -j ACCEPT`
@@ -645,11 +742,11 @@ sudo gnp-server install
 ```
 ✅ Server 部署完成!
   server: 8.209.203.17:443 (UDP/QUIC)
-  证书: /opt/gnp-quic/certs/server.crt / server.key
-  配置: /opt/gnp-quic/config.json
+  证书: /opt/gnp/certs/server.crt / server.key
+  配置: /opt/gnp/config.json
   服务: gnp-hy2 (systemd)
 
-下一步: gnp-server add-user <名称> 添加用户
+下一步: gnps add-user <名称> 添加用户
 ```
 
 > ⚠️ 阿里云安全组需要放行 **UDP 443** 端口。
@@ -661,13 +758,13 @@ sudo gnp-server install
 完全卸载 Hysteria2 server。
 
 ```bash
-sudo gnp-server uninstall
+sudo gnps uninstall
 ```
 
 **卸载内容**：
 
 1. 停止并禁用 `gnp-hy2` 服务
-2. 删除 `/opt/gnp-quic/` 目录（配置 + 证书 + sing-box 二进制 + pending-users）
+2. **保留** `/opt/gnp/` 数据（config.toml / 证书 / users / pending-users）：卸载只停服务删单元，要彻底清再手动删该目录
 3. 删除 systemd 单元 `/etc/systemd/system/gnp-hy2.service`
 4. `systemctl daemon-reload`
 
@@ -678,7 +775,7 @@ sudo gnp-server uninstall
 查看 gnp-hy2 服务状态和用户信息。
 
 ```bash
-sudo gnp-server status
+sudo gnps status
 ```
 
 **输出内容**：
@@ -694,7 +791,7 @@ sudo gnp-server status
 列出所有已注册的用户密码。
 
 ```bash
-sudo gnp-server users
+sudo gnps users
 ```
 
 **输出**：config.json 中 users[] 的所有密码列表。
@@ -706,7 +803,7 @@ sudo gnp-server users
 为新客户端生成密码并加入 gnp-hy2。
 
 ```bash
-sudo gnp-server add-user <名称>
+sudo gnps add-user <名称>
 ```
 
 **参数**：
@@ -744,7 +841,7 @@ password: gnp-xxxxxxxx
 批量生成待用用户密码包，不占运行时资源。
 
 ```bash
-sudo gnp-server pregen <数量>
+sudo gnps pregen <数量>
 ```
 
 **参数**：
@@ -756,11 +853,11 @@ sudo gnp-server pregen <数量>
 **行为说明**：
 
 - 为每个用户生成唯一密码
-- 存为 JSON 到 `/opt/gnp-quic/pending-users/<id>.json`
+- 存为 JSON 到 `/opt/gnp/pending-users/<id>.json`
 - JSON 包含：id、status=available、password、server_endpoint `8.209.203.17:443`
 - 文件权限 600
 
-**用途**：配合 `gnp-client register` 实现新机器自动注册。用户密码池可推送到 gitee 私有仓库。
+**用途**：配合 `gnpc register` 实现新机器自动注册。用户密码池可推送到 gitee 私有仓库。
 
 ---
 
@@ -769,7 +866,7 @@ sudo gnp-server pregen <数量>
 将 pending-users 中的用户密码加入 gnp-hy2 运行时。
 
 ```bash
-sudo gnp-server activate <client_id>
+sudo gnps activate <client_id>
 ```
 
 **参数**：
@@ -780,12 +877,12 @@ sudo gnp-server activate <client_id>
 
 **行为说明**：
 
-1. 从 `/opt/gnp-quic/pending-users/<id>.json` 读取配置
+1. 从 `/opt/gnp/pending-users/<id>.json` 读取配置
 2. 将密码追加到 config.json 的 users[]（若已存在则跳过）
 3. 重启 gnp-hy2 服务
 4. 更新 JSON 状态为 `activated`
 
-> ⚠️ `gnp-client register` 完成后，**必须**在 server 上执行此命令，否则客户端无法连通。
+> ⚠️ `gnpc register` 完成后，**必须**在 server 上执行此命令，否则客户端无法连通。
 
 ---
 
@@ -800,13 +897,13 @@ sudo gnp-server activate <client_id>
 bash bash/install.sh
 
 # 2. 安装 Hysteria2 server
-sudo gnp-server install
+sudo gnps install
 
 # 3. 预生成用户密码池（推荐）
-sudo gnp-server pregen 20
+sudo gnps pregen 20
 
 # 4. 将 pending-users/ 目录推送到 gitee 私有仓库
-cd /opt/gnp-quic/pending-users/
+cd /opt/gnp/pending-users/
 # 复制到项目仓库的 peers/ 目录，push 到 gitee
 ```
 
@@ -818,23 +915,23 @@ bash bash/install.sh
 
 # 2. 自动注册
 export GITEE_TOKEN=xxxx
-gnp-client register my-machine
+gnpc register my-machine
 
 # 3. 回到 Server 上激活
-sudo gnp-server activate my-machine
+sudo gnps activate my-machine
 
 # 4. 启动代理
-gnp-client start
+gnpc start
 
 # 5. 设置系统代理
 # macOS:
-gnp-client proxy --on
+gnpc proxy --on
 # Linux:
 export http_proxy=http://127.0.0.1:1080
 export https_proxy=http://127.0.0.1:1080
 
 # 6. 验证
-gnp-client test
+gnpc test
 ```
 
 ### 场景二：新机器加入
@@ -842,14 +939,14 @@ gnp-client test
 ```bash
 # 在新机器上
 export GITEE_TOKEN=xxxx
-gnp-client register new-machine-id
+gnpc register new-machine-id
 # → 自动取用户密码、生成配置、安装 sing-box
 
 # 在 Server 上激活
-sudo gnp-server activate new-machine-id
+sudo gnps activate new-machine-id
 
 # 启动
-gnp-client start
+gnpc start
 ```
 
 ### 场景三：日常使用
@@ -859,40 +956,40 @@ gnp-client start
 # 只需设置代理：
 
 # macOS（浏览器）
-gnp-client proxy --on
+gnpc proxy --on
 
 # Linux（终端）
 export http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080
 
 # 查看状态
-gnp-client status
+gnpc status
 
 # 测试连通性
-gnp-client test
+gnpc test
 ```
 
 ### 场景四：故障排查
 
 ```bash
 # 1. 查看完整状态
-gnp-client status
+gnpc status
 
 # 2. 检查配置安全
-gnp-client config --check
+gnpc config --check
 
 # 3. 隧道诊断
-gnp-client tunnel
+gnpc tunnel
 
 # 4. 如果代理不工作，尝试重启
-gnp-client stop
-gnp-client start
+gnpc stop
+gnpc start
 
 # 5. 如果断网了（tun 模式残留）
-gnp-client recover    # 恢复网络
-gnp-client cleanup    # 彻底清理 sing-box
+gnpc recover    # 恢复网络
+gnpc cleanup    # 彻底清理 sing-box
 # 然后重新安装
-gnp-client install ...
-gnp-client start
+gnpc install ...
+gnpc start
 ```
 
 ---
@@ -914,22 +1011,29 @@ gnp-client start
 
 | 项目 | macOS | Linux |
 |------|-------|-------|
-| 系统代理 | `gnp-client proxy --on`（networksetup + osascript） | `gnp-client proxy --on`（gsettings）或 export |
+| 系统代理 | `gnpc proxy --on`（networksetup + osascript） | `gnpc proxy --on`（gsettings）或 export |
 | 授权方式 | osascript 弹窗（不存密码） | 无需授权（gsettings 或环境变量） |
 | 浏览器生效 | Safari/Chrome 自动走系统代理 | GNOME 应用走 gsettings；终端需 export |
 | 终端代理 | 需手动 export | `export http_proxy=http://127.0.0.1:1080` |
 
-### 数据目录（跨平台一致）
+### 部署目录（跨平台一致，2026-10-05 起）
+
+客户端 `~/.local/gnp/`（`$GNP_HOME` 可覆盖；服务端 `/opt/gnp/`）：
 
 ```
-~/.local/share/sing-box/
-├── sing-box          # 二进制 (with_quic)
-├── config.json       # 配置
-├── rules/            # 规则集
-│   ├── geosite-cn.srs
-│   ├── geoip-cn.srs
-│   └── ...
-└── cron.log          # cron 日志
+~/.local/gnp/
+├── bin/
+│   ├── gnpc              # 客户端 CLI (tick.sh 的内核组件)
+│   ├── sing-box          # 二进制
+│   └── tick.sh           # 唯一调度入口 (全部机器同一份)
+├── config.toml           # ★ 唯一事实源 (0600, 含内联密码)
+├── config.json           # 生成物 (勿手改)
+├── etc/tick.d/*.sh       # 可选组件: 存在即跑, 缺席静默
+├── rules/*.srs           # 规则集 (geosite-cn / geoip-cn / google / github / ...)
+├── secrets/              # hy2-password, hy2-obfs (0600 带换行; 容器挂载源)
+├── var/                  # cache.db, guard-state.json, guard.log, tick.log,
+│                         # sing-box.log/.err (状态与日志, 勿放配置)
+└── backups/              # 历次变更快照 + migrate 后的 legacy 整目录 (回滚用)
 ```
 
 ---
@@ -961,7 +1065,7 @@ gnp-client start
 }
 ```
 
-- `password`：Hysteria2 认证密码（由 `gnp-server add-user` 生成）
+- `password`：Hysteria2 认证密码（由 `gnps add-user` 生成）
 - `tls.insecure: true`：信任 server 自签证书
 - 基于 QUIC/TLS 1.3，无需像 WireGuard 那样维护公钥对和虚拟 IP
 
@@ -1026,7 +1130,8 @@ mixed 模式监听 `0.0.0.0:1080`，同时支持 socks5 和 http 代理协议。
 |------|------|
 | Server 地址 | `8.209.203.17:443`（UDP/QUIC） |
 | 认证 | Hysteria2 密码（`HY2_PASSWORD`） |
-| 证书 | 自签 `/opt/gnp-quic/certs/`（客户端 insecure 信任） |
+| 证书 | 自签 `/opt/gnp/certs/`（客户端 insecure 信任） |
+| 端口 | UDP 5766（`GNP_PORT`，代码默认值；改动需 ufw + 云安全组双侧） |
 
 > 密码需要安全传输，不影响安全性。密码池存在 gitee 私有仓库。
 

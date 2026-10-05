@@ -13,24 +13,24 @@
 - 🔑 **密码认证**：server 端密码池（HY2_PASSWORD），替代 wg 公钥对
 - 🔒 **mixed 代理模式（安全）**：只开 socks5+http 端口 1080，**绝不使用 tun 模式**
 - 💻 **Rust CLI 三平台**：macOS (launchd) / Linux (systemd) / Windows (schtasks)
-- 🤝 **一键接入**：`gnp-server gen-user` 生成 gnp.cfg → 客户端 `gnp-client peer gnp.cfg` 完成
+- 🤝 **一键接入**：`gnps gen-user` 生成 gnp.cfg → 客户端 `gnpc peer gnp.cfg` 完成
 - 📦 **sing-box 1.13.16**：使用 outbound hysteria2 格式（with_quic 构建）
 
 ## CLI 代理（curl/pip/uv/npm/git 等）
 
-CLI 工具不读系统代理设置，只认环境变量。`gnp-client env` 子命令解决：
+CLI 工具不读系统代理设置，只认环境变量。`gnpc env` 子命令解决：
 
 ```bash
-eval "$(gnp-client env --on)"    # 当前 shell 立即生效（curl/pip/npm/git 走 127.0.0.1:1080）
-eval "$(gnp-client env --off)"   # 取消
-eval "$(gnp-client env --hook)"  # 写入 .zshrc/.bashrc → 得到 gnp-on / gnp-off 快捷函数
-gnp-client env                   # 查看当前 shell 代理状态
+eval "$(gnpc env --on)"    # 当前 shell 立即生效（curl/pip/npm/git 走 127.0.0.1:1080）
+eval "$(gnpc env --off)"   # 取消
+eval "$(gnpc env --hook)"  # 写入 .zshrc/.bashrc → 得到 gnp-on / gnp-off 快捷函数
+gnpc env                   # 查看当前 shell 代理状态
 ```
 
 - 国内流量**无需**配 no_proxy 白名单：sing-box 内部已按 geosite-cn 分流直连
   （实测 baidu 0.05s 直连 / google 0.19s 走 hy2）
 - Windows PowerShell 等价：`$env:https_proxy='http://127.0.0.1:1080'; $env:http_proxy=$env:https_proxy`
-- GUI/浏览器走 `gnp-client proxy --on`（系统代理），CLI 走 `env --on`，两套互不干扰
+- GUI/浏览器走 `gnpc proxy --on`（系统代理），CLI 走 `env --on`，两套互不干扰
 
 ## ⚠️ 安全原则
 
@@ -59,8 +59,8 @@ gnp-client env                   # 查看当前 shell 代理状态
 bash bash/install.sh
 
 # 验证
-gnp-client --version   # gnp-client 0.1.0
-gnp-server --version   # gnp-server 0.1.0
+gnpc --version   # gnpc 0.1.0
+gnps --version   # gnps 0.1.0
 
 # 卸载
 bash bash/uninstall.sh           # 移除软链
@@ -70,36 +70,52 @@ bash bash/uninstall.sh --clean   # 移除软链 + 删除 bin/ 产物
 ### 1. 部署 server（lwtop/Ubuntu）
 
 ```bash
-sudo gnp-server install          # 安装 sing-box + 自签证书 + QUIC + 开机自启
-sudo gnp-server status           # 查看状态
-sudo gnp-server add-user macbook # 添加客户端（生成密码）
-sudo gnp-server pregen 20        # 预生成 20 个用户密码池
-sudo gnp-server activate <id>    # 激活预生成的用户
+# 事实源: deploy/hosts/lwtop-server.toml → /opt/gnp/config.toml (唯一事实源)
+scp deploy/hosts/lwtop-server.toml lwtop:/tmp/
+ssh lwtop 'sudo install -m 600 /tmp/lwtop-server.toml /opt/gnp/config.toml
+           sudo /opt/gnp/bin/gnps install --config /opt/gnp/config.toml'
+# gnps install = 渲染 config.json + sing-box check + gnps.service + tick 调度 + 开机自启
+
+sudo /opt/gnp/bin/gnps status           # gnps active + UDP 5766 监听
+sudo /opt/gnp/bin/gnps gen-user --name macbook  # 加用户 + 出 gnp.cfg (含 5766 + obfs)
+sudo /opt/gnp/bin/gnps users            # 列用户
+sudo /opt/gnp/bin/gnps pregen 20        # 预生成 20 个用户密码池
+sudo /opt/gnp/bin/gnps activate <id>    # 激活预生成的用户
 ```
 
 ### 2. 部署 client（Mac/Ubuntu）
 
 ```bash
-# 方式 A: 从 gitee 自动注册（推荐，一键完成）
+# 方式 A: 新机器 (从零)
+gnpc init --server 8.209.203.17 --hy2-password <密码> --obfs-password <obfs> \
+          --listen 127.0.0.1     # 生成唯一事实源 config.toml
+gnpc install                      # 下载 sing-box + 规则集, 渲染 config.json, 装常驻服务
+gnpc install-scheduler            # 装调度 (tick.sh + launchd/crontab), 并清旧
+gnpc start
+
+# 方式 B: 从旧布局迁移 (推荐用于存量机器, 幂等可重跑)
+scp deploy/hosts/<host>.toml <host>:~/.local/gnp/config.toml
+scp gnpc <host>:/tmp/ && ssh <host> '/tmp/gnpc migrate --config ~/.local/gnp/config.toml'
+# migrate = 落事实源 → 搬资产 → sing-box check → 停旧让位端口 → 装新调度
+#          → 验进程+端口+出口 IP → 才归档旧目录; 任一步失败自动装回旧服务
+
+# 方式 C: 从 gitee 自动注册
 export GITEE_TOKEN=xxxx
-gnp-client register my-client-id
-# 自动: 拉取用户密码 → 生成 config → 安装 sing-box
+gnpc register my-client-id
 
-# 方式 B: 手动安装
-gnp-client install \
-  --server 8.209.203.17 \
-  --password <HY2_PASSWORD> \
-  --server-port 443
-
-gnp-client start    # 启动 sing-box 代理（开机自启）
-gnp-client stop     # 停止
-gnp-client status   # 查看状态（进程/端口/隧道/出口IP）
-gnp-client tunnel   # 隧道诊断（兼容旧名 wg）
-gnp-client config --check  # 校验配置安全
-gnp-client test     # 测试代理连通性
-gnp-client env      # CLI 代理环境状态（gnp-on/gnp-off 快捷开关）
-gnp-client peer gnp.cfg  # 从 server 发来的 gnp.cfg 一键接入
-gnp-client update-rules --install-cron  # 每日自动更新规则
+gnpc start    # 启动 sing-box 代理（开机自启）
+gnpc stop     # 停止
+gnpc status   # 查看状态（进程/端口/通道/出口IP）
+gnpc status --brief   # 一行摘要: hy2 120ms sel=auto-out auto=hy2-out frozen=no exit=8.209.203.17
+gnpc tunnel   # 隧道诊断（兼容旧名 wg）
+gnpc config --check  # 校验配置安全 + 与 config.toml 一致性
+gnpc test     # 测试代理连通性
+gnpc env      # CLI 代理环境状态（gnp-on/gnp-off 快捷开关）
+gnpc peer gnp.cfg  # 从 server 发来的 gnp.cfg 一键接入
+gnpc switch ssh    # 强制 TCP 兜底（urltest 会自动选路, auto 交还）
+gnpc guard         # 手动跑一次看门狗（正常由 tick.sh 每分钟调）
+gnpc rules-update  # 立即更新规则集（正常由 tick.sh 04 点窗口调）
+gnpc migrate --dry-run   # 只看会改什么, 不落盘
 ```
 
 ### 3. 使用代理
@@ -107,9 +123,9 @@ gnp-client update-rules --install-cron  # 每日自动更新规则
 #### macOS（系统代理）
 
 ```bash
-gnp-client proxy --on       # 开启系统代理 (osascript 弹授权, 不存密码)
-gnp-client proxy --status   # 查看代理状态
-gnp-client proxy --off      # 关闭系统代理
+gnpc proxy --on       # 开启系统代理 (osascript 弹授权, 不存密码)
+gnpc proxy --status   # 查看代理状态
+gnpc proxy --off      # 关闭系统代理
 ```
 
 > 开启后 Safari / Chrome 等浏览器自动走 sing-box 代理。
@@ -123,7 +139,7 @@ export https_proxy=http://127.0.0.1:1080
 export all_proxy=socks5://127.0.0.1:1080
 
 # 方式 B: GNOME 系统代理
-gnp-client proxy --on
+gnpc proxy --on
 
 # 或单次
 curl -x socks5h://127.0.0.1:1080 https://www.google.com
@@ -141,20 +157,22 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 
 | 项目 | 值 |
 |------|------|
-| Server 地址 | `8.209.203.17:443`（UDP/QUIC） |
-| 认证方式 | Hysteria2 密码（`HY2_PASSWORD`，由 `gnp-server add-user` 生成） |
-| 证书 | 自签证书 `/opt/gnp-quic/certs/`（客户端 `insecure: true` 信任） |
+| Server 地址 | `8.209.203.17:5766`（UDP/QUIC；2026-10-05 从 443 迁出） |
+| 认证方式 | Hysteria2 密码 + salamander obfs（两者都在 `config.toml`；由 `gnps gen-user` 生成 gnp.cfg） |
+| 证书 | 自签证书 `/opt/gnp/certs/`（客户端 `insecure: true` 信任） |
 
 > 密码需要安全传输，不影响 server 安全性。密码池存在 gitee 私有仓库。
 
-## 部署矩阵（2026-08-15 实体部署已收敛）
+## 部署矩阵（2026-10-05 全量迁到 v2 布局：`~/.local/gnp` / `/opt/gnp` + `config.toml`）
 
-| 节点 | 角色 | 二进制（实体拷贝） | 服务 | 实例 |
-|---|---|---|---|---|
-| Mac | client | `~/.local/bin/gnp-client` | launchd com.gnp.sing-box | 单一 ✓ |
-| aipro | client + 无线路由 | `~/.local/bin/gnp-client` | systemd gnp-proxy | 单一 ✓（路由容器内 sing-box 为独立角色） |
-| lwtop | server | `/usr/local/bin/gnp-server` | systemd gnp-hy2 | 单一 ✓ (UDP 443) |
-| vmwin (Win11 ARM64) | client ✨ | `%USERPROFILE%\.local\bin\gnp-client.exe` | 计划任务 gnp-singbox (ONLOGON) | ✅ 实测: 出口8.209.203.17, proxy on/off 回合通过 (x64 模拟层) |
+| 节点 | 角色 | 部署根（二进制+配置+规则+secrets） | 常驻服务 | 调度 | 实例 |
+|---|---|---|---|---|---|
+| Mac | client | `~/.local/gnp/` | launchd `com.gnpc.singbox` | launchd `com.gnpc.tick` (60s) | 单一 ✓ |
+| aipro | client + 无线路由 | `/home/lwboy/.local/gnp/` | systemd `gnpc.service`（系统级） | root crontab 单行 tick | 宿主 1 个 ✓（路由容器内 sing-box 是独立角色, 共存不算残留） |
+| lwmate | client | `/home/lwboy/.local/gnp/` | systemd `gnpc.service` | 用户 crontab 单行 tick | 单一 ✓ |
+| cozepc (火山 x86_64) | client | `/root/.local/gnp/` | systemd `gnpc.service` | root crontab 单行 tick | ✅ 出口 8.209.203.17, github/google 200; sing-box 官方 release 自带 with_quic, 无需自编译 |
+| lwtop | server | `/opt/gnp/` | systemd `gnps.service` | root crontab 单行 tick（`GNP_HOME=/opt/gnp`） | 单一 ✓ (UDP 5766) |
+| vmwin / lwwin | client | 待迁移：`%~\.local\gnp` | 计划任务 `gnpc` (ONLOGON) | 暂不支持 (Windows 无 tick) | 离线中（plan D6），资产已备好，开机后 `gnpc migrate` |
 
 ### Windows 支持（2026-08-15）
 
