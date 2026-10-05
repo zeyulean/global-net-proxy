@@ -1,0 +1,398 @@
+# gnp v2 重构实施计划（gnpc/gnps · config.toml · tick 调度 · 路径收敛）
+
+> 2026-10-05 拍板。执行者：独立 coding agent。本文自包含，不依赖对话上下文。
+> 背景事件（10-4 hy2 断网两天、ufw 真根因、5766 迁移）见 `.docs/plan.md` §8，勿改动该文件。
+> 事后分析结论：服务端 ufw 缺 443/udp + conntrack 重启清空；已迁 5766/udp；客户端已双通道
+> (selector→urltest: hy2+ssh) + probe/switch/guard 三命令，全部实测通过。本计划在此之上重构形态。
+
+---
+
+## 0. 已拍板的决策（不可推翻）
+
+| # | 决策 | 内容 |
+|---|---|---|
+| D1 | 改名 | 命令 `gnp-client`→`gnpc`，`gnp-server`→`gnps`；服务名/launchd 标签/计划任务跟着改。**crate 名（gnp-core/gnp-client/gnp-server）与 `use gnp_core` 等内部引用不动** |
+| D2 | 配置 | 单一 `config.toml` 唯一事实源；config.json/plist/unit/cron 全是生成物。每台机器一份 host toml 进 repo（`deploy/hosts/`），**密码内联进 git（私有 repo，用户已确认）** |
+| D3 | 调度 | 全部机器同一份 `tick.sh` + 同一行 cron/launchd。内核组件 `gnpc guard`；`etc/tick.d/*.sh` 可执行即跑；**组件缺席=真静默，组件失败=落 tick.log WARN（不弹通知）**；告警只保留 guard 降级/恢复事件（现状）。sing-box 常驻本体是独立 KeepAlive 服务，**不与 tick 合并**（生命周期不同，合并已被否决） |
+| D4 | 路径 | 客户端 `~/.local/gnp/`（DEPLOY_PATH），服务端 `/opt/gnp/`（用户指定），二进制含 sing-box 全在 `$DEPLOY_PATH/bin/`；`GNP_PORT=5766` 为代码默认值 + toml 可覆盖 |
+| D5 | JSON 边界 | JSON（clash_api/config.json/guard-state）只存在于 gnpc/gnps Rust 代码内；**bash（tick.sh/tick.d）永不解析 JSON**，需要数据时调 `gnpc status --brief` 拿纯文本一行 |
+| D6 | Windows | vmwin/lwwin 当前离线：repo 备好资产 + `gnpc migrate` 支持开机后一键迁移，本次不阻塞 |
+
+保留不动的名字：repo 名 global-net-proxy、品牌 "gnp"、shell 函数 `gnp-on`/`gnp-off`（用户肌肉记忆）、sing-box outbound tag（hy2-out/ssh-out/proxy-out/auto-out）、clash_api 端口 9090。
+
+---
+
+## 1. 目标形态
+
+### 1.1 命名映射（旧 → 新）
+
+| 旧 | 新 |
+|---|---|
+| `gnp-client`（二进制） | `gnpc` |
+| `gnp-server`（二进制） | `gnps` |
+| systemd `gnp-proxy.service`（lwmate/cozepc） | `gnpc.service` |
+| systemd `--user sing-box`（aipro） | `gnpc.service`（**系统级**，统一） |
+| systemd `gnp-hy2.service`（lwtop，root） | `gnps.service` |
+| launchd `com.gnp.sing-box` | `com.gnpc.singbox` |
+| launchd `com.gnp.guard` | `com.gnpc.tick`（跑 tick.sh，非直接跑 guard） |
+| Windows 计划任务 `gnp-singbox` | `gnpc` |
+| `~/.local/share/sing-box/` | `~/.local/gnp/`（客户端） |
+| `/opt/gnp-quic/`（lwtop） | `/opt/gnp/` |
+| secrets `.hy2-secret` / `.hy2-obfs-secret` | `$DEPLOY_PATH/secrets/hy2-password` / `secrets/hy2-obfs` |
+
+### 1.2 目录布局
+
+```
+客户端 (~/.local/gnp/，四台 + Mac + 未来 Windows 同构):
+  bin/gnpc, bin/sing-box, bin/tick.sh
+  config.toml              # 唯一事实源 (0600)
+  config.json              # 生成物
+  etc/tick.d/*.sh          # 可选组件 (健康检查/证书/未来任务)
+  rules/*.srs
+  var/                     # cache.db, guard-state.json, tick.log, guard.log,
+                           # sing-box.log/.err (Mac 现在丢 /tmp 的收进来)
+  secrets/                 # hy2-password, hy2-obfs (0600, 带换行)
+  backups/                 # 历次变更快照 + migrate 后的 legacy 整目录
+
+服务端 (/opt/gnp/，lwtop):
+  bin/gnps, bin/sing-box, bin/tick.sh
+  config.toml → config.json
+  etc/tick.d/              # gnps 健康检查、证书到期检查
+  certs/server.crt|key     # 从 /opt/gnp-quic/certs 迁入
+  var/, backups/
+```
+
+代码里 `GNP_HOME` 环境变量可覆盖 `~/.local/gnp`（测试用），`GNP_PORT` 常量默认 5766、toml `[server].hy2_port` 可覆盖。
+
+### 1.3 config.toml schema（gnp-core 新增 `settings` 模块，toml crate 已在 workspace deps）
+
+客户端（`deploy/hosts/mac.toml`，其余主机见附录 7.3）：
+
+```toml
+# gnpc 客户端配置 — 唯一事实源。生成物: config.json / 服务单元 / tick.sh
+[server]
+host = "8.209.203.17"
+hy2_port = 5766            # GNP_PORT
+ssh_port = 22              # ssh 兜底通道
+ssh_user = "lw"
+ssh_key  = "~/.ssh/id_ed25519"   # ~ 由 gnpc 展开
+
+[auth]
+hy2_password  = "gnp-quic-test-password"
+obfs_password = "gnp-obfs-20261005"   # 服务端 inbound 强制 salamander
+
+[client]
+listen = "127.0.0.1"       # mac 单机自用; aipro/lwmate/cozepc = "0.0.0.0"
+clash_api_port = 9090
+
+[client.hosts]             # 可选: 预定义解析 + 路由直连 (仅 mac 用)
+aipro.host = "192.168.1.2"
+lwtop.host = "8.209.203.17"
+mac.host   = "127.0.0.1"
+
+[guard]
+freeze_after_failures = 2
+backoff_base_s = 60
+backoff_cap_s  = 180       # 对齐 urltest 3m; 再大会拖慢恢复回切 (实测教训)
+```
+
+服务端（`/opt/gnp/config.toml`，事实源放 repo `deploy/hosts/lwtop-server.toml`）：
+
+```toml
+[server]
+listen = "::"
+hy2_port = 5766
+
+[auth]
+obfs_password = "gnp-obfs-20261005"
+
+[[users]]
+password = "gnp-quic-test-password"
+
+[[users]]
+name = "mac-peertest"
+password = "gnp-acaba449a5f42c8248d2f412d1817e46"
+# ... 共 8 个用户, 从 lwtop /opt/gnp-quic/config.json 全量搬
+```
+
+规则：`gnpc install --config <toml>`（缺省读 `$DEPLOY_PATH/config.toml`）生成一切；`gnpc init` 交互式生成 toml；`gnps gen-user` 追加 `[[users]]` 并重新渲染 config.json + restart。**config.json 内不放注释**（不依赖 sing-box 对未知字段的容忍度）；"勿手改"提示写进 toml 头部注释和文档。
+
+### 1.4 tick.sh（全文，放 `deploy/scheduler/tick.sh`，部署到 `$DEPLOY_PATH/bin/tick.sh`）
+
+```bash
+#!/usr/bin/env bash
+# tick.sh — gnp 统一调度入口。全部机器同一份; cron/launchd 只调它。
+# 约定: 组件缺席=静默跳过(设计行为); 组件失败=落 WARN(不允许无声)。
+# 兼容 Mac bash 3.2: 不用关联数组/${var,,}; 不用 jq。
+BASE="${GNP_HOME:-$HOME/.local/gnp}"          # 服务端部署时导出 GNP_HOME=/opt/gnp
+LOG="$BASE/var/tick.log"
+mkdir -p "$BASE/var"
+touch "$LOG"
+
+# 日志上限 ~1MB: 截断保后半
+if [ "$(wc -c < "$LOG")" -gt 1048576 ]; then
+    tail -c 524288 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
+
+echo "== tick $(date '+%F %T') =="
+
+# 内核组件 1: 客户端看门狗 (gnpc 在才跑; 服务端机器自然跳过)
+[ -x "$BASE/bin/gnpc" ] && "$BASE/bin/gnpc" guard >>"$LOG" 2>&1 \
+    || echo "WARN gnpc guard 非零退出" >>"$LOG"
+
+# 内核组件 2: 规则集日更 (04 点窗口 + 当日标记防重)
+if [ -x "$BASE/bin/gnpc" ] && [ "$(date +%H)" = "04" ] \
+   && [ ! -e "$BASE/var/.rules-updated-$(date +%F)" ]; then
+    "$BASE/bin/gnpc" rules-update >>"$LOG" 2>&1 \
+        && touch "$BASE/var/.rules-updated-$(date +%F)" \
+        || echo "WARN rules-update 失败" >>"$LOG"
+fi
+
+# 插件组件: 存在即参与; 缺失=静默
+for t in "$BASE"/etc/tick.d/*.sh; do
+    [ -x "$t" ] || continue
+    bash "$t" >>"$LOG" 2>&1 || echo "WARN tick.d 失败: $t" >>"$LOG"
+done
+```
+
+调度接线（资产在 `deploy/scheduler/`，`include_str!` 编进 gnpc——**repo 是可编辑事实源，改 scheduler 文件后需重编 gnpc**）：
+
+- **Mac** launchd `com.gnpc.tick`：ProgramArguments `[/bin/bash, $BASE/bin/tick.sh]`，RunAtLoad + StartInterval=60；日志 `$BASE/var/tick-launchd.log`
+- **Linux** crontab 一行：`* * * * * /home/lwboy/.local/gnp/bin/tick.sh`（gnpc `install-scheduler` 幂等安装，先清旧行）
+- **服务端** 同一份 tick.sh（GNP_HOME=/opt/gnp），tick.d 放 `gnps-health.sh`（`systemctl is-active gnps` 非 active 则 start + WARN）
+
+### 1.5 子命令清单（重构后 gnpc）
+
+```
+start/stop/status/test/tunnel/proxy/env    # 不变 (env hook 输出里的命令名改 gnpc)
+probe/switch/guard                         # 不变; guard 即单 tick (tick.sh 调它)
+config --show/--check                      # 不变 (check 增加: 与 config.toml 一致性)
+install --config <toml>                    # 读 toml 取代全部 --server/--password 参数
+init                                       # 新增: 生成 config.toml (向导/flags)
+migrate                                    # 新增: 见 §4.2
+rules-update                               # 原 update-rules 的下载+重启逻辑
+install-scheduler / uninstall-scheduler    # 新增: 装/卸 launchd+crontab+systemd
+status --brief                             # 新增: 纯文本一行 "hy2 135ms sel=hy2-out frozen=no"
+                                           #   — bash/tick.d 的唯一数据接口 (D5)
+```
+
+---
+
+## 2. 现状清单（迁移起点，逐台核对过）
+
+| 机器 | 接入 | 现服务 | 现路径 | 特殊点 |
+|---|---|---|---|---|
+| Mac | 本机 | launchd `com.gnp.sing-box` + `com.gnp.guard`(60s) | `~/.local/share/sing-box/`；二进制 `~/.local/bin/gnp-client`；日志在 `/tmp/sing-box-gnp.{log,err}` | listen 127.0.0.1；hosts 三条；crontab 空 |
+| aipro | `ssh aipro`（192.168.1.2，lwboy） | systemd **--user** `sing-box` | `/home/lwboy/.local/share/sing-box/`（/home/lwboy 是 /mnt/disk/lwboy 软链，**配置内嵌路径用 /home/lwboy**） | 路由容器 `aipro-wifi-router` 挂载宿主 `.hy2-secret`/`.hy2-obfs-secret`（§6 专述）；sudo 密码 `~/.sudo_aipro` |
+| lwmate | `ssh lwmate`（192.168.0.110，lwboy） | systemd 系统级 `gnp-proxy` | `/home/lwboy/.local/share/sing-box/` | **sudo NOPASSWD** |
+| cozepc | `ssh cozepc`（10.99.0.4，root，ProxyJump ningsure） | systemd 系统级 `gnp-proxy` | `/root/.local/share/sing-box/` | root；火山引擎 |
+| lwtop | `ssh lwtop`（8.209.203.17，lw；**sudo 密码=ningsure 同款，Mac 上 `< ~/.sudo_ningsure`**） | systemd `gnp-hy2`（root，ExecStart=/home/lw/.local/share/sing-box/sing-box run -c /opt/gnp-quic/config.json） | `/opt/gnp-quic/{config.json,certs/}` | ufw 4 条（22/tcp,443/tcp,1194/udp,5766/udp）；云安全组已收敛 6 条；服务端 config 已 5766+obfs+8 用户 |
+| vmwin / lwwin | 离线 | 计划任务 `gnp-singbox`；vmwin 默认 shell 是 **cmd** | `%USERPROFILE%\.local\share\sing-box\` | 本次只备资产，开机后 `gnpc migrate` |
+
+当前 hy2 密码：mac/aipro=`gnp-quic-test-password`，lwmate=`gnp-f9edae36cc9e8b0f3f470d3d07db55b0`，cozepc=`gnp-99e2e8cb6141a1a3d603c4133c6fe4e`；obfs 统一 `gnp-obfs-20261005`。
+
+---
+
+## 3. 阶段 0：repo 重构（纯代码，不碰机器）
+
+1. **二进制改名**：`crates/gnp-client/Cargo.toml` `[[bin]] name="gnpc"`；gnp-server 同理 `gnps`。crate/目录名不动。`main.rs` 里所有帮助文本的 `gnp-client` 改 `gnpc`。
+2. **settings 模块**（gnp-core `src/settings.rs`）：`ClientSettings`/`ServerSettings` 结构体 + toml load/save + `Default`（含 GNP_PORT=5766）。serde + toml 反序列化，字段即 §1.3 schema。单元测试：round-trip、缺省值、`~` 展开。
+3. **路径模块**：`platform.rs` 的 `sb_dir()` 改 `gnp_home()`（`$GNP_HOME` || `~/.local/gnp`），bin/config/var/rules/secrets/backacks 派生函数。server 侧 `gnps_home()`=`/opt/gnp`（`GNP_SERVER_HOME` 覆盖）。
+4. **build_config 改造**：入参从 `ClientConfigParams`（CLI flag 拼的）改为 `&ClientSettings`；输出不变（双通道形态，`install.rs` 现有 3 个单测改为从 settings 构造）。**生成逻辑零变更**——双通道/clash_api/hosts/dns-detour 跟随组等已实测，别动。
+5. **install/guard/switch/probe 适配**：读 toml；guard 参数（freeze/backoff）从 `[guard]` 读；guard 日志/状态路径进 `var/`。
+6. **scheduler 资产**：`deploy/scheduler/{tick.sh, com.gnpc.singbox.plist, com.gnpc.tick.plist, gnpc.service, gnpc.cron}`（内容=§1.4 与现有模板改名/改路径版），gnpc `include_str!` 嵌入，`install-scheduler` 写出 + 接线 + 清旧（`com.gnp.*` unload 删除、旧 cron 行剔除、`gnp-proxy`/`gnp-hy2` disable）。
+7. **migrate 命令**（§4.2 规格实现）。
+8. `gnps`：config.toml→config.json 渲染（users 数组、certs 路径 `/opt/gnp/certs/`）、`gen-user` 改为追加 toml 再渲染、`install` 生成 `gnps.service`（ExecStart=/opt/gnp/bin/sing-box，仍 root——5766>1024 降权是可选项，本次不做）。
+9. **更新 gnps 发的 gnp.cfg**：`server-port=5766` + `obfs-pass=...`（gnpc `peer` 子命令已支持读 `obfs-pass`，勿回退）。
+10. `cargo build --release && cargo test --workspace` 全绿；`target/` 曾被清理过，注意重建。
+
+## 4. 阶段 1-2：Mac 试点 → lwtop
+
+### 4.1 Mac（先在这台验证全流程）
+
+```bash
+gnpc migrate          # 见 4.2
+gnpc status           # 通道/出口绿
+launchctl list | grep gnpc    # com.gnpc.singbox + com.gnpc.tick, 无 com.gnp.*
+tail ~/.local/gnp/var/tick.log
+ls ~/.local/share/sing-box    # 应已不存在(内容在 backups/legacy-singbox/)
+```
+
+### 4.2 `gnpc migrate` 规格（一台机器一条命令完成迁移）
+
+1. 探测 legacy `~/.local/share/sing-box/config.json`；解析出 server/host/port/password/obfs/listen/hosts → 写 `$DEPLOY_PATH/config.toml`（若 `--config` 给了 host toml 则直接用，跳过解析）
+2. 复制 sing-box 二进制、rules/、cache.db 到新布局；gnpc 自身放 `bin/`
+3. 生成 config.json（`sing-box check` 必须通过，否则中止不动旧服务）
+4. `install-scheduler`：装新服务/cron，**先起新的再拆旧的**（顺序：新服务 start+verify → unload/disable 旧服务 → 删旧 plist/unit/cron 行）
+5. 旧目录整体挪 `$DEPLOY_PATH/backups/legacy-singbox/`（不删，回滚用）
+6. 输出验证清单（status/probe 结果），任何一步失败：停在新半边，旧服务保持原样
+
+### 4.3 lwtop（服务端）
+
+```bash
+# 在 lwtop: 停旧 → /opt/gnp 布局 → gnps 渲染 → 新服务 → 拆旧
+sudo systemctl stop gnp-hy2
+sudo mkdir -p /opt/gnp/{bin,etc/tick.d,var,secrets,backups}
+sudo cp /opt/gnp-quic/certs /opt/gnp/ -r
+# 部署 gnps + sing-box 二进制到 /opt/gnp/bin, config.toml 到 /opt/gnp/
+sudo /opt/gnp/bin/gnps install --config /opt/gnp/config.toml   # 渲染+gnps.service+tick.sh
+sudo systemctl enable --now gnps && systemctl is-active gnps
+sudo systemctl disable gnp-hy2; sudo mv /opt/gnp-quic /opt/gnp/backups/gnp-quic-legacy
+```
+
+验证：四台客户端 `gnpc probe --skip-mtu` 握手通（服务端 IP 不变端口不变，客户端理论无感；仍要全量跑一遍）。ufw 不动（5766/udp 已放行）。
+
+## 5. 阶段 3：aipro / lwmate / cozepc
+
+每台：scp 对应 `deploy/hosts/<host>.toml` → `$HOME/.local/gnp/config.toml`（aipro 注意 GNP_HOME 展开后是 /home/lwboy/...）→ 部署 gnpc（**aipro/lwmate 是 aarch64 还是 x86_64 先 `uname -m` 核对**，cross-build 用 `cargo build --release --target <Triple>`）+ sing-box → `gnpc migrate`。aipro 额外：`systemctl --user disable --now sing-box`（迁系统级 gnpc.service 后）+ `loginctl disable-linger lwboy`（若无其他 user 服务占用）。lwmate/cozepc：旧 `gnp-proxy` disable。终验同 §7.1。
+
+## 6. 阶段 4：aipro 路由容器（只改挂载源，不重建镜像）
+
+容器镜像内模板已是 5766+obfs（2026-10-05 修好）。迁移只动两件事：
+
+1. `deploy/aipro-wifi/router-docker/run.sh`：宿主路径改新布局——密码提取源 `/mnt/disk/lwboy/.local/gnp/config.toml`（**用 grep/sed 提取单行 `key = "value"`，不依赖 python tomllib**，toml 格式是我们自己生成的、一键一行，可放心 grep）；secret 写入 `$BASE/secrets/hy2-password|hy2-obfs`（**带换行**，read+set -e 坑）；挂载源同步改
+2. aipro 上 `docker rm -f aipro-wifi-router` 后用新 run.sh 重跑（镜像不重建）
+
+验证：`docker logs aipro-wifi-router` 出现 `outbound/hysteria2[hy2-out]` 真实流量 + AP 客户端（iPhone）能出海。
+
+## 7. 验收 / 回滚 / 坑
+
+### 7.1 验收（逐台，全过才算完）
+
+1. `gnpc status`：双通道健康、urltest=hy2-out、出口 8.209.203.17、github 200
+2. 调度唯一：Mac `launchctl list` 仅 com.gnpc.*；Linux `crontab -l` 仅一行 tick；服务端仅 gnps.service + tick
+3. `tick.log` 有周期输出且无持续 WARN；guard 演练：lwtop `systemctl stop gnps` → ≤3 分钟冻结 ssh+告警 → start → 自动回切 hy2（复用 10-5 已验证剧本）
+4. **无残留**：`~/.local/share/sing-box`、`/opt/gnp-quic`（挪 backups）、旧服务名、旧 launchd/cron 行全部消失；`pgrep -f sing-box` 每机恰 1 个（aipro 路由容器内那 1 个除外——容器内 sing-box 与宿主 gnp 是两个角色，本来就并存）
+5. 重启演练（至少 Mac + 一台 Linux）：开机自启全绿
+6. 四台手工 diff=0：`md5` 比对各机 config.toml 与 `deploy/hosts/` 版本一致
+
+### 7.2 回滚
+
+新服务失败 → `gnpc uninstall-scheduler` + 从 `backups/legacy-singbox` 原位恢复旧目录/单元/cron（migrate 步骤 6 保证旧侧未拆时随时可退）。服务端同理 `/opt/gnp/backups/gnp-quic-legacy`。
+
+### 7.3 坑清单（都是 2026-08~10 真金白银换的，禁止回退）
+
+1. cache_file 必须绝对路径（systemd CWD=/ 不可写 → crash-loop 111 次教训）
+2. sing-box ≥1.13 拒绝 legacy `dns.fakeip` 顶层字段（FATAL）
+3. secrets 文件**必须带换行**：`read` 无换行返回非零 × `set -e` = 容器死循环重启
+4. crontab 写入必须用**文件参数**或 Rust 端 stdin.take() 显式关管道；Mac 沙箱/CLI 环境 `crontab -` 会永久挂起（Mac 调度走 launchd 的另一原因）
+5. Mac bash 3.2：不用关联数组/`${var,,}`；Mac/alpine 无 jq：bash 不碰 JSON（D5）
+6. aipro home=/home/lwboy（软链 /mnt/disk/lwboy）：配置内嵌绝对路径一律写 /home/lwboy
+7. lwtop sudo 密码 = ningsure 同款（无 ~/.sudo_lwtop）
+8. guard 冻结时必须重启 sing-box（长跑实例 ssh-out 出站会僵死，实测）；退避 cap 180s（1h 会拖慢恢复 26min，实测）
+9. urltest tolerance 300ms 会让恢复后卡在 ssh——guard 的"hy2 健康但 urltest 在 ssh → 强制 hy2"逻辑保留
+10. probe MTU 扫描保留单调性校验（服务端 InDatagrams 有全机 UDP 噪声）
+11. 服务端端口改动必须 ufw+云安全组双侧、且 ufw 持久化（禁裸 iptables）；docker 发布端口绕过 ufw
+12. vmwin shell 是 cmd 不是 PowerShell；Windows sing-box 用 VBS 隐形启动（弹黑窗坑）
+13. 跨机 scp 后必 md5；远端跑脚本先 scp 成文件再执行（ssh heredoc 转义必炸）
+
+### 7.4 收尾
+
+- 文档：`readme.md` 命令表、`docs/usage.md`（全局改名+新目录+新子命令）、`deploy/quic-test/README.md`（/opt/gnp-quic→/opt/gnp 路径）；删除 `deploy/config-mac/`（被 hosts/mac.toml 取代，留一个 commit 记录即可）
+- 提交拆分建议：① rename+settings+paths ② scheduler+migrate ③ 文档；每个 commit 过 `cargo test`
+- 完成后通知主会话更新记忆（machine-access-map / gnp-network-topology 里的路径与服务名）
+
+---
+
+## 8. 附录：关键资产全文
+
+### 8.1 deploy/scheduler/com.gnpc.singbox.plist（Mac 常驻）
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.gnpc.singbox</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/SHOME/.local/gnp/bin/sing-box</string>
+        <string>run</string><string>-c</string>
+        <string>/Users/SHOME/.local/gnp/config.json</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/Users/SHOME/.local/gnp/var/sing-box.log</string>
+    <key>StandardErrorPath</key><string>/Users/SHOME/.local/gnp/var/sing-box.err</string>
+</dict>
+</plist>
+```
+
+（install-scheduler 渲染时替换绝对路径；com.gnpc.tick.plist 结构同，ProgramArguments=[/bin/bash, .../bin/tick.sh]，去 KeepAlive 加 StartInterval=60，日志 var/tick-launchd.log）
+
+### 8.2 deploy/scheduler/gnpc.service（Linux 客户端，系统级）
+
+```ini
+[Unit]
+Description=GNP Client (gnpc, mixed proxy, no tun)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/SHOME/.local/gnp/bin/sing-box run -c /home/SHOME/.local/gnp/config.json
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+（gnps.service 同构：/opt/gnp 路径，Description=GNP Server）
+
+### 8.3 deploy/hosts/ 全量（密码已内联，D2）
+
+`mac.toml` 见 §1.3（唯一含 `[client.hosts]` 的主机）。其余三个客户端模板（只差三处值，见注释）：
+
+```toml
+# aipro.toml / lwmate.toml / cozepc.toml 共用此模板, 差异仅注释处
+[server]
+host = "8.209.203.17"
+hy2_port = 5766
+ssh_port = 22
+ssh_user = "lw"
+ssh_key = "~/.ssh/id_ed25519"        # cozepc 用 "/root/.ssh/id_ed25519"
+
+[auth]
+# aipro:     gnp-quic-test-password
+# lwmate:    gnp-f9edae36cc9e8b0f3f470d3d07db55b0
+# cozepc:    gnp-99e2e8cb6141a1a3d603c4133c6fe4e
+hy2_password  = "<按注释替换>"
+obfs_password = "gnp-obfs-20261005"
+
+[client]
+listen = "0.0.0.0"                   # 局域网服务机; mac 才是 127.0.0.1
+clash_api_port = 9090
+
+[guard]
+freeze_after_failures = 2
+backoff_base_s = 60
+backoff_cap_s  = 180
+```
+
+`lwtop-server.toml`：
+
+```toml
+[server]
+listen = "::"
+hy2_port = 5766
+
+[auth]
+obfs_password = "gnp-obfs-20261005"
+
+# 8 个 [[users]] 从 lwtop /opt/gnp-quic/config.json 的 inbounds[0].users 全量搬:
+# 无名 gnp-quic-test-password; mac-peertest gnp-acaba449a5f42c8248d2f412d1817e46;
+# 其余 6 个 gnp-e22f.../gnp-f9ed...(注意与 lwmate 同密码)/gnp-12aad.../
+# gnp-6745.../gnp-c878.../cozepc gnp-99e2... —— 以实机文件为准, 迁移时脚本化提取
+```
+
+---
+
+## 9. 明确不做（防 scope creep）
+
+- vless/reality TCP 入站（P2，另行立项）
+- 端口跳跃（5767 备用口留在安全组，不动）
+- gnp-hy2/gnps 降权非 root、多出口/协议矩阵（P3）
+- rust crate 改名、repo 改名
