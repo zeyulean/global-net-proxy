@@ -17,6 +17,10 @@
   - [wg — Hysteria2 隧道诊断](#wg--hysteria2-隧道诊断)
   - [test — 测试代理连通性](#test--测试代理连通性)
   - [install — 安装 sing-box + 生成配置](#install--安装-sing-box--生成配置)
+  - [双通道架构与自动降级](#双通道架构与自动降级2026-10-05-新增)
+  - [probe — 主动诊断](#probe--主动诊断hy2-握手--mtu-扫描)
+  - [switch — 手动通道切换](#switch--手动通道切换)
+  - [guard — 通道看门狗](#guard--通道看门狗退避探测--故障冻结--告警)
   - [register — 自动注册新机器](#register--自动注册新机器)
   - [update-rules — 规则集更新 + 守护](#update-rules--规则集更新--守护)
   - [cleanup — 应急清理](#cleanup--应急清理)
@@ -354,6 +358,76 @@ gnp-client install \
 ```
 
 > ⚠️ 密码需要安全传输，不要泄露。
+
+---
+
+### 双通道架构与自动降级（2026-10-05 新增）
+
+`install` 生成的配置不再是单 hy2 通道，而是**双通道 + 自动选路**（2026-10-05 跨境
+hy2 断网两天事件的修复，见 `.docs/plan.md`）：
+
+```
+route.final → proxy-out (selector, 手动 override 入口)
+    └→ auto-out (urltest: 每 3m 探测, tolerance 300ms)
+        ├→ hy2-out  QUIC 主通道（快时胜出）
+        └→ ssh-out  TCP 兜底（复用服务端 sshd, 免疫 UDP 黑洞）
+```
+
+- hy2 探测失败 → urltest 一个周期内自动落 ssh；恢复后自动回切，无需人工干预
+- DNS（dns-remote）detour 跟随 selector，通道降级时 DNS 同步降级
+- 配置同时开启 clash_api（127.0.0.1:9090），供 switch/status/guard 读取热状态
+- ssh 兜底默认开启：密钥 `~/.ssh/id_ed25519`、user=lw、端口 22（`--no-ssh-fallback` 可关）
+- 服务端 inbound 若开 salamander obfs，生成时必须 `--obfs-password <密码>`
+
+### probe — 主动诊断（hy2 握手 + MTU 扫描）
+
+把"代理时通时不通/无声超时"的标准排查一条命令化（排障范式见 plan 附录）：
+
+```bash
+gnp-client probe                # 全套: 握手测试 + 载荷尺寸扫描
+gnp-client probe --skip-mtu     # 只测 hy2 握手
+gnp-client probe --sizes 1200,1240,1280 --count 20
+```
+
+1. **hy2 握手测试**：起临时 sing-box 实例（独立端口、无 cache_file），经真实路径
+   curl generate_204，输出握手是否可用与出口 IP
+2. **UDP 载荷尺寸扫描**：向服务端发 1200/1240/1280/1332/1400B 各 N 包（×3 轮取中位），
+   ssh 读服务端 `/proc/net/snmp` Udp InDatagrams 差分 → MTU 截止点（需本机 ssh 免密登录服务端）
+3. **结论**：明确输出"路径可容 QUIC / MTU 截止 ~xB, QUIC 初始包被丢 → 建议 ssh"
+
+### switch — 手动通道切换
+
+urltest 按"最快"自动选路；switch 提供 manual override：
+
+```bash
+gnp-client switch        # 查看当前通道（selector 默认 + 热状态）
+gnp-client switch ssh    # 强制 TCP 兜底（如怀疑 QoS / hy2 半死）
+gnp-client switch hy2    # 强制 QUIC
+gnp-client switch auto   # 交还 urltest 自动选路（默认）
+```
+
+实现 = clash_api 热切换（立即生效）+ config selector default 写回（重启仍生效）。
+手动切换后 guard 不会覆盖你的选择（guard 只在"自己冻结的 ssh"恢复时解冻）。
+
+### guard — 通道看门狗（退避探测 + 故障冻结 + 告警）
+
+设计为每分钟一次的单 tick（无常驻进程），macOS 用 launchd（com.gnp.guard）或
+cron 驱动，Linux 用 cron：
+
+```bash
+gnp-client guard                 # 手动跑一次 tick（调试）
+gnp-client guard --install-cron  # Linux 装 cron（每分钟）; macOS 建议用 launchd agent
+```
+
+行为：
+
+1. 每 tick 经 clash_api 探测 hy2 延迟（5s 超时）
+2. 失败 → 指数退避再探（60s→120s→cap 180s, ±20% 抖动），全程落 `guard.log`——
+   掐掉"服务端重启 → 全员重连风暴"的二次伤害
+3. 连续 2 次失败 → 冻结到 ssh-out（selector 强制）+ 重启 sing-box（确保兜底通道干净）+ 告警
+4. 恢复探测通过 → 自动解冻交还 urltest + 告警
+5. 告警渠道：`GNP_ALERT_CMD` 环境变量钩子 > macOS 系统通知 > Linux notify-send，
+   始终落 `~/.local/share/sing-box/guard.log`；持续故障 30min 限频
 
 ---
 

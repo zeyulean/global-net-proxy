@@ -6,6 +6,7 @@
 //!   cron     — 安装/管理 cron 任务 (每天检查)
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::process::Command;
 
 /// update: 强制更新规则集 (重启 sing-box 即可)
@@ -89,8 +90,8 @@ pub fn cmd_install_cron() -> Result<()> {
         .stdin(std::process::Stdio::piped())
         .spawn()
         .context("crontab 命令失败")?;
-    if let Some(ref mut stdin) = st.stdin {
-        use std::io::Write;
+    // 显式关闭 stdin — 不 drop 则 crontab 等不到 EOF, 安装会永久挂起
+    if let Some(mut stdin) = st.stdin.take() {
         let _ = stdin.write_all(content.as_bytes());
     }
     let output = st.wait_with_output().context("crontab 写入失败")?;
