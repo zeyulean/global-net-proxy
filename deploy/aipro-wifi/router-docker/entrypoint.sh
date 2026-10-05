@@ -45,10 +45,16 @@ fi
 # ── 代理模式 (gnpon, 默认) ──
 echo "[entrypoint] 渲染 sing-box 配置"
 # 密码来源: /run/secrets/hy2_password (run.sh 挂载, 优先) 或 HY2_PASSWORD env (回退)
+# 注: read 对"无换行结尾"的文件会返回非零, set -e 下必须 || true (变量已正确赋值)
 if [ -f /run/secrets/hy2_password ]; then
-    read -r HY2_PASSWORD < /run/secrets/hy2_password
+    read -r HY2_PASSWORD < /run/secrets/hy2_password || true
 fi
-sed "s/__HY2_PASSWORD__/${HY2_PASSWORD:?need hy2 secret file or HY2_PASSWORD env}/" \
+# obfs 密码: 服务端 inbound 强制 salamander, /run/secrets/hy2_obfs_password (run.sh 挂载) 或 HY2_OBFS env
+if [ -f /run/secrets/hy2_obfs_password ]; then
+    read -r HY2_OBFS < /run/secrets/hy2_obfs_password || true
+fi
+sed -e "s/__HY2_PASSWORD__/${HY2_PASSWORD:?need hy2 secret file or HY2_PASSWORD env}/" \
+    -e "s/__HY2_OBFS__/${HY2_OBFS:?need hy2 obfs secret file or HY2_OBFS env}/" \
     /etc/sing-box/config.template > /etc/sing-box/config.json
 
 echo "[entrypoint] tproxy 路由规则"

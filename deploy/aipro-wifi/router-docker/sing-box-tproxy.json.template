@@ -53,8 +53,12 @@
       "type": "hysteria2",
       "tag": "hy2-out",
       "server": "8.209.203.17",
-      "server_port": 443,
+      "server_port": 5766,
       "password": "__HY2_PASSWORD__",
+      "obfs": {
+        "type": "salamander",
+        "password": "__HY2_OBFS__"
+      },
       "tls": {
         "enabled": true,
         "insecure": true

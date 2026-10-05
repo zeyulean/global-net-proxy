@@ -11,6 +11,13 @@ HY2_PASS=$(python3 -c "
 import json
 c=json.load(open('/mnt/disk/lwboy/.local/share/sing-box/config.json'))
 print(next(o['password'] for o in c['outbounds'] if o['type']=='hysteria2'))")
+HY2_OBFS=$(python3 -c "
+import json
+c=json.load(open('/mnt/disk/lwboy/.local/share/sing-box/config.json'))
+for o in c['outbounds']:
+    if o['type']=='hysteria2':
+        print((o.get('obfs') or {}).get('password',''))
+        break")
 
 # sing-box 二进制进构建上下文：
 #   优先 submodule aipro-wifi/resources（分支 aipro-resources，离线可用）
@@ -24,6 +31,10 @@ else
   exit 1
 fi
 
+# 规则集进构建上下文（模板引用 local .srs；取宿主机 gnp 的规则缓存）
+mkdir -p ./rules
+cp -f /mnt/disk/lwboy/.local/share/sing-box/rules/*.srs ./rules/
+
 echo "=== 1/4 NM 交接 wlan1（持久 unmanaged）==="
 nmcli device set wlan1 managed no 2>/dev/null || true
 mkdir -p /etc/NetworkManager/conf.d
@@ -36,9 +47,13 @@ echo "=== 2/4 构建镜像 ==="
 docker build -t aipro-wifi-router:latest .
 
 # hy2 密码 → root-only secret 文件（容器经 /run/secrets 只读挂载，不经命令行/环境）
+# 带换行结尾: read 无换行时返回非零, 会让 set -e 的 entrypoint 死循环重启
 SECRET_FILE=/mnt/disk/lwboy/.local/share/sing-box/.hy2-secret
 umask 077
-printf '%s' "$HY2_PASS" > "$SECRET_FILE"
+printf '%s\n' "$HY2_PASS" > "$SECRET_FILE"
+# obfs 密码同理（服务端 inbound 强制 salamander）
+OBFS_FILE=/mnt/disk/lwboy/.local/share/sing-box/.hy2-obfs-secret
+printf '%s\n' "$HY2_OBFS" > "$OBFS_FILE"
 
 echo "=== 3/4 运行（host 网络 + privileged）==="
 docker rm -f aipro-wifi-router 2>/dev/null || true
@@ -48,6 +63,7 @@ docker run -d \
   --privileged \
   --restart unless-stopped \
   -v "$SECRET_FILE":/run/secrets/hy2_password:ro \
+  -v "$OBFS_FILE":/run/secrets/hy2_obfs_password:ro \
   -e WIFI_IFACE=wlan1 \
   aipro-wifi-router:latest
 
