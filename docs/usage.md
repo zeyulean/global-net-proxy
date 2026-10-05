@@ -461,7 +461,7 @@ gnpc install \
 ### 双通道架构与自动降级（2026-10-05 新增）
 
 `install` 生成的配置不再是单 hy2 通道，而是**双通道 + 自动选路**（2026-10-05 跨境
-hy2 断网两天事件的修复，见 `.docs/plan.md`）：
+hy2 断网两天事件的修复，见 [finished-plans/2026-10-04-hy2-outage-repair.md](finished-plans/2026-10-04-hy2-outage-repair.md)）：
 
 ```
 route.final → proxy-out (selector, 手动 override 入口)
@@ -1137,4 +1137,4 @@ mixed 模式监听 `0.0.0.0:1080`，同时支持 socks5 和 http 代理协议。
 
 ---
 
-> 📖 相关文档：[架构设计](architecture.md) | [安装指南](setup.md) | [自动注册](auto-registration.md) | [断网事故记录](incident-2026-08-10.md)
+> 📖 相关文档：[架构设计](architecture.md) | [自动注册](auto-registration.md) | [断网事故记录](incident-2026-08-10.md) | [已完成计划归档](finished-plans/README.md)

@@ -15,5 +15,8 @@
 # 临时文件
 *.tmp
 *.log
-.DS_Storequic-test/certs/*.key
 .DS_Store
+quic-test/certs/*.key
+
+# Mimosa 钩子工具本地状态 (含 reports, 不进 repo)
+.mimosa/

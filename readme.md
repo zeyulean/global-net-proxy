@@ -207,7 +207,7 @@ curl -x socks5h://127.0.0.1:1080 https://www.google.com
 ├── Cargo.toml / crates/     # gnp 产品: gnp-core + gnp-client + gnp-server
 ├── config/safe-template.json# 安全配置模板 (mixed + hysteria2)
 ├── bash/                    # 构建安装脚本
-├── docs/                    # 产品文档 (usage/setup/architecture/...)
+├── docs/                    # 产品文档 (usage/architecture/auto-registration + finished-plans 归档)
 ├── vendor/sing-box/         # submodule: sing-box 源码
 └── deploy/                  # 个人部署资产 (aipro-wifi / ns-hub / peers / ...) — 与产品分离
 ```

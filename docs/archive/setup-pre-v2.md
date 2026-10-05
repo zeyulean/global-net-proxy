@@ -1,3 +1,7 @@
+> **已归档 (2026-10-05)**: 本文档描述 v2 重构前的安装流程 (gnp-client/gnp-server 命令名、
+> ~/.local/share/sing-box 布局、CLI flags 安装)。现行安装/迁移指南以 [usage.md](../usage.md)
+> 为准 (gnpc/gnps + config.toml 唯一事实源 + ~/.local/gnp)。
+
 # global-net-proxy 安装指南
 
 > ⚠️ **安全警告**: 客户端使用 **mixed 代理模式**，绝不使用 tun 模式。

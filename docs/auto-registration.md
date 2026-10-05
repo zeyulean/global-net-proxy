@@ -1,3 +1,7 @@
+> **v2 对齐说明 (2026-10-05)**: 命令已改名 `gnp-client`→`gnpc`、`gnp-server`→`gnps`（crate 名未变）；
+> 服务端布局 `/opt/gnp`、端口 5766/udp + salamander obfs、注册直接产出 v2 的
+> `~/.local/gnp/`（config.toml 唯一事实源 + config.json 生成物 + 双通道）。
+
 # 预生成用户（密码池）自动注册方案
 
 ## 目标
@@ -16,9 +20,9 @@
 
 | 角色 | 位置 | 职责 |
 |------|------|------|
-| **lwtop server** | 海外 VPS (8.209.203.17) | hysteria2 server (gnp-hy2)，用户激活 (`--activate`)，预生成 (`--pre-gen`) |
+| **lwtop server** | 海外 VPS (8.209.203.17) | hysteria2 server (gnps)，用户激活 (`--activate`)，预生成 (`--pre-gen`) |
 | **gitee 私有仓库** | lw_boy/global-net-proxy | 存储预生成的用户密码池（含密码），server 密码校验值 |
-| **新机器 client** | aipro/mac/ningsure/lwpc 等 | 运行 `gnp-client register`，从池中取密码，安装 sing-box |
+| **新机器 client** | aipro/mac/ningsure/lwpc 等 | 运行 `gnpc register`，从池中取密码，安装 sing-box |
 
 ### 数据流
 
@@ -26,15 +30,15 @@
  ┌─────────────────────────────────────────────────────────────────┐
  │  lwtop server                                                   │
  │                                                                 │
- │  gnp-server pregen 20                                         │
+ │  gnps pregen 20                                         │
  │    ├─ 生成 20 个用户密码包（id, password, status）              │
- │    ├─ 存到 /opt/gnp-quic/pending-users/<id>.json               │
+ │    ├─ 存到 /opt/gnp/pending-users/<id>.json               │
  │    └─ git push → gitee 私有仓库 peers/ 目录                     │
  │                                                                 │
- │  gnp-server activate aipro                                     │
+ │  gnps activate aipro                                     │
  │    ├─ 读 pending-users/aipro.json                              │
  │    ├─ 将 password 加入 config.json 的 users[]                  │
- │    ├─ 重启 gnp-hy2 服务                                        │
+ │    ├─ 重启 gnps 服务                                        │
  │    └─ 标记该用户为 activated（status: "activated"）             │
  └────────────────────┬────────────────────────────────────────────┘
                       │ git push (私有仓库)
@@ -56,15 +60,15 @@
  ┌─────────────────────────────────────────────────────────────────┐
  │  新机器 (e.g. ningsure)                                         │
  │                                                                 │
- │  gnp-client register ningsure                                           │
+ │  gnpc register ningsure                                           │
  │    1. git clone https://<token>@gitee.com/lw_boy/global-net-proxy│
  │    2. 找到 status="available" 的 peer → 改为 "used"              │
  │    3. git push 回 gitee（标记占用）                              │
  │    4. 校验 peers/HY2_PASSWORD                                    │
- │    5. 生成 ~/.local/share/sing-box/config.json (mixed 模式,     │
+ │    5. 生成 ~/.local/gnp/config.json (mixed 模式,     │
  │       hysteria2 outbound, 填入 password)                         │
  │    6. 下载 sing-box + 安装 systemd service                      │
- │    7. 提示用户: 去 lwtop 跑 gnp-server activate ningsure       │
+ │    7. 提示用户: 去 lwtop 跑 gnps activate ningsure       │
  └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,14 +76,14 @@
 
 ## 详细流程
 
-### Phase 1: Server 预生成 (`gnp-server pregen <N>`)
+### Phase 1: Server 预生成 (`gnps pregen <N>`)
 
 ```
 [管理员在 lwtop 上运行]
-sudo gnp-server pregen 20
+sudo gnps pregen 20
 
-  1. 检查 root + gnp-hy2 已安装
-  2. 扫描 /opt/gnp-quic/pending-users/ 和 config.json 现有 users
+  1. 检查 root + gnps 已安装
+  2. 扫描 /opt/gnp/pending-users/ 和 config.json 现有 users
   3. for i in 1..N:
        a. 生成 id: 自动分配 slot-NN
        b. 生成唯一密码 password (gnp-<hex>，随机)
@@ -96,11 +100,11 @@ sudo gnp-server pregen 20
   5. 可选: --push 参数 → git commit + push 到 gitee
 ```
 
-### Phase 2: Client 注册 (`gnp-client register <client_id>`)
+### Phase 2: Client 注册 (`gnpc register <client_id>`)
 
 ```
 [新机器上运行]
-gnp-client register ningsure
+gnpc register ningsure
 
   1. 检测平台 + 架构
   2. 克隆 gitee 私有仓库到临时目录
@@ -117,28 +121,28 @@ gnp-client register ningsure
      - 填入: server (8.209.203.17), server_port (443), password
      - hysteria2 outbound + mixed 模式 (socks5+http 0.0.0.0:1080)
   7. 下载 sing-box (with_quic)
-  8. 安装 systemd 系统服务 (/etc/systemd/system/gnp-proxy.service)
+  8. 安装 systemd 系统服务 (/etc/systemd/system/gnpc.service)
   9. 提示:
      ═══════════════════════════════════════════
      ⚠️  最后一步: 在 lwtop 上执行激活!
      
      ssh lwtop
-     sudo gnp-server activate ningsure
+     sudo gnps activate ningsure
      ═══════════════════════════════════════════
 ```
 
-### Phase 3: Server 激活 (`gnp-server activate <client_id>`)
+### Phase 3: Server 激活 (`gnps activate <client_id>`)
 
 ```
 [管理员在 lwtop 上运行]
-sudo gnp-server activate ningsure
+sudo gnps activate ningsure
 
-  1. 检查 root + gnp-hy2 运行中
-  2. 读 /opt/gnp-quic/pending-users/ningsure.json
+  1. 检查 root + gnps 运行中
+  2. 读 /opt/gnp/pending-users/ningsure.json
      → 提取 password
   3. 检查该密码是否已在 config.json 的 users[] (防重复激活)
   4. 将 password 追加到 config.json 的 users[]
-     (写入后重启 gnp-hy2 服务生效)
+     (写入后重启 gnps 服务生效)
   5. 标记 JSON: status="activated"
   6. 可选: --push → git push 更新状态
   7. 输出确认信息
@@ -161,7 +165,7 @@ sudo gnp-server activate ningsure
 
 状态流转:
 ```
-available  ──gnp-client register 取用──▶  used  ──gnp-server activate──▶  activated
+available  ──gnpc register 取用──▶  used  ──gnps activate──▶  activated
 ```
 
 ---
@@ -174,18 +178,18 @@ available  ──gnp-client register 取用──▶  used  ──gnp-server act
 |------|------|---------|
 | 用户密码泄露 | 攻击者可冒充 client 连接 server | gitee **私有**仓库 + token 认证；密码不出 gitee |
 | 未经授权的机器注册 | 任意机器获取用户密码 | GITEE_TOKEN 是认证边界；token 只给可信机器 |
-| 密码重用（同一密码多机使用） | 连接冲突 + 密码泄露 | gnp-client register 原子标记 `status: used` 并 push 回 gitee |
+| 密码重用（同一密码多机使用） | 连接冲突 + 密码泄露 | gnpc register 原子标记 `status: used` 并 push 回 gitee |
 | server 密码校验值泄露 | 无风险（仅用于校验） | 校验值写在 readme.md，任何人可见 |
 | gitee token 泄露 | 所有用户密码泄露 | token 权限最小化（只读该仓库）；定期轮换 |
-| man-in-the-middle 注册过程 | client 拿到错误的 server 密码 | peers/HY2_PASSWORD 硬编码在 gnp-client register 中作为校验值 |
+| man-in-the-middle 注册过程 | client 拿到错误的 server 密码 | peers/HY2_PASSWORD 硬编码在 gnpc register 中作为校验值 |
 
 ### 安全原则
 
-1. **密码始终在 gitee 私有仓库**：gnp-client register 拉取后写入本地，不从公开渠道传输
+1. **密码始终在 gitee 私有仓库**：gnpc register 拉取后写入本地，不从公开渠道传输
 2. **server 密码校验值可公开**：校验值不影响安全性，写在 readme.md 方便校验
 3. **用户配置一次性**：`status` 字段保证每个密码只被一台机器使用
 4. **token 是唯一认证**：GITEE_TOKEN 控制谁能拉取密码池，等于"谁能加入网络"
-5. **激活分离**：gnp-client register 只完成 client 侧配置；server 侧激活需要管理员手动操作（防止恶意注册直接上线）
+5. **激活分离**：gnpc register 只完成 client 侧配置；server 侧激活需要管理员手动操作（防止恶意注册直接上线）
 
 ### 信任边界
 
@@ -208,7 +212,7 @@ available  ──gnp-client register 取用──▶  used  ──gnp-server act
 
 - **协议**：Hysteria2 (QUIC over UDP 443，TLS 1.3 加密)
 - **认证**：仅需密码（`HY2_PASSWORD`），无需公钥对、无需分配虚拟 IP
-- **证书**：server 自签证书 `/opt/gnp-quic/certs/`，客户端 `tls.insecure: true` 信任
+- **证书**：server 自签证书 `/opt/gnp/certs/`，客户端 `tls.insecure: true` 信任
 - **端口**：UDP 443
 
 相比旧版 WireGuard：**每个用户只需一个密码**，无需生成/交换公钥、无需管理虚拟 IP 分配，注册和激活流程更简单。
@@ -221,8 +225,8 @@ available  ──gnp-client register 取用──▶  used  ──gnp-server act
 global-net-proxy/
 ├── crates/
 │   ├── gnp-core/              # 共享库
-│   ├── gnp-client/            # client CLI (register 等)
-│   └── gnp-server/            # server CLI (pregen/activate)
+│   ├── gnp-client/            # gnpc (bin 名): register 等
+│   └── gnp-server/            # gnps (bin 名): pregen/activate
 ├── config/
 │   └── safe-template.json
 ├── docs/
@@ -244,10 +248,10 @@ global-net-proxy/
 
 ```bash
 # 在 lwtop 上
-sudo gnp-server pregen 20
-# 输出: 生成了 slot-01..slot-20, 存在 /opt/gnp-quic/pending-users/
+sudo gnps pregen 20
+# 输出: 生成了 slot-01..slot-20, 存在 /opt/gnp/pending-users/
 
-sudo bash gnp-server pregen 5 --push
+sudo bash gnps pregen 5 --push
 # 生成并推送到 gitee
 ```
 
@@ -256,19 +260,19 @@ sudo bash gnp-server pregen 5 --push
 ```bash
 # 在 ningsure 上 (有 GITEE_TOKEN)
 export GITEE_TOKEN=xxxx
-gnp-client register ningsure
+gnpc register ningsure
 
 # 输出:
 # [INFO] 从 gitee 拉取用户池...
 # [INFO] 选中用户: ningsure (password: gnp-xxxx)
 # [INFO] 标记已使用...
-# [INFO] 生成配置: ~/.local/share/sing-box/config.json
+# [INFO] 生成配置: ~/.local/gnp/config.json
 # [INFO] 安装 sing-box (with_quic)...
 # [INFO] 安装 systemd service...
 # ═══════════════════════════════════════════
 # ⚠️  最后一步: 在 lwtop 上执行激活!
 #   ssh lwtop
-#   sudo gnp-server activate ningsure
+#   sudo gnps activate ningsure
 # ═══════════════════════════════════════════
 ```
 
@@ -276,10 +280,10 @@ gnp-client register ningsure
 
 ```bash
 # 在 lwtop 上
-sudo gnp-server activate ningsure
+sudo gnps activate ningsure
 # 输出:
 # [INFO] 激活用户: ningsure
-# [INFO] 将密码加入 config.json users[] 并重启 gnp-hy2
+# [INFO] 将密码加入 config.json users[] 并重启 gnps
 # [INFO] ✓ 用户 ningsure 已激活
 ```
 
@@ -287,8 +291,8 @@ sudo gnp-server activate ningsure
 
 ```bash
 # 在 client 上
-gnp-client test       # 测试连通性
-gnp-client start      # 启动
+gnpc test       # 测试连通性
+gnpc start      # 启动
 curl -x socks5h://127.0.0.1:1080 https://ifconfig.me
 # 应返回 lwtop 的公网 IP
 ```
