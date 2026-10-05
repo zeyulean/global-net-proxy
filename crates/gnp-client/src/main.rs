@@ -5,9 +5,13 @@
 
 use std::io::IsTerminal;
 
+mod api;
 mod cleanup;
+mod guard;
+mod probe;
 mod recover;
 mod register;
+mod switch;
 mod update_rules;
 
 use anyhow::{Context as _, Result};
@@ -41,9 +45,12 @@ use gnp_core::{config, install, platform, proxy, service, tunnel};
         \n\
         常用命令:\n\
         \n  \
-        gnp-client start           启动代理 (注册开机自启)\n  \
+        gnp-client start           启动代理 (开机自启)\n  \
         gnp-client stop            停止代理\n  \
-        gnp-client status          查看状态 (进程/端口/隧道/出口IP)\n  \
+        gnp-client status          查看状态 (进程/端口/隧道/通道/出口IP)\n  \
+        gnp-client probe           诊断: hy2 握手 + MTU 扫描\n  \
+        gnp-client switch ssh      强制 TCP 兜底 (auto 恢复自动)\n  \
+        gnp-client guard --install-cron  通道看门狗 (每分钟)\n  \
         gnp-client tunnel          隧道诊断 (兼容旧名 wg)\n  \
         gnp-client test            测试代理连通性\n  \
         gnp-client config --check  校验配置安全\n  \
@@ -122,6 +129,68 @@ enum Commands {
         示例:\n  \
         gnp-client test")]
     Test,
+    /// 主动诊断: hy2 握手测试 + UDP 载荷尺寸扫描 (MTU 黑洞定位)
+    #[command(long_about = "主动诊断跨境链路, 把\"代理无声超时\"排查一条命令化。\n\n\
+        两项检测 (2026-10-05 MTU 黑洞事件范式):\n  \
+        1. hy2 握手测试 — 临时 sing-box 实例经真实路径 curl generate_204\n  \
+        2. UDP 载荷尺寸扫描 — 向服务端发 1200/1240/1280/1332/1400B 各 N 包,\n  \
+           ssh 读服务端 /proc/net/snmp Udp InDatagrams 差分 → MTU 截止点\n\n\
+        输出明确结论: 路径是否容得下 QUIC (≥1200B 初始包)。\n\
+        MTU 扫描需本机 ssh 密钥可免密登录服务端。\n\n\
+        示例:\n  \
+        gnp-client probe                     # 全套诊断\n  \
+        gnp-client probe --skip-mtu          # 只测 hy2 握手\n  \
+        gnp-client probe --sizes 1200,1240,1280 --count 20")]
+    Probe {
+        /// 尺寸档 (逗号分隔, B)
+        #[arg(long, default_value = "1200,1240,1280,1332,1400")]
+        sizes: String,
+        /// 每档 UDP 包数
+        #[arg(long, default_value_t = 10)]
+        count: u32,
+        /// 读服务端计数器的 ssh 用户
+        #[arg(long, default_value = "lw")]
+        ssh_user: String,
+        /// 服务端 ssh 端口
+        #[arg(long, default_value_t = 22)]
+        ssh_port: u16,
+        /// 跳过 hy2 握手测试
+        #[arg(long)]
+        skip_handshake: bool,
+        /// 跳过 MTU 扫描
+        #[arg(long)]
+        skip_mtu: bool,
+    },
+    /// 手动通道切换 (manual override: auto/hy2/ssh)
+    #[command(long_about = "手动切换出站通道 (urltest 的 manual override)。\n\n\
+        通道:\n  \
+        auto → 交还 urltest 自动选路 (默认, hy2 快则 hy2, 死则自动落 ssh)\n  \
+        hy2  → 强制 hy2-out (QUIC 主通道)\n  \
+        ssh  → 强制 ssh-out (TCP 兜底, 免疫 UDP MTU 黑洞)\n\n\
+        实现: clash_api 热切换 (立即生效) + config selector default 写回 (重启仍生效)。\n\n\
+        示例:\n  \
+        gnp-client switch            # 查看当前通道\n  \
+        gnp-client switch ssh        # 强制 TCP 兜底\n  \
+        gnp-client switch auto       # 恢复自动选路")]
+    Switch {
+        /// 目标通道: auto | hy2 | ssh (缺省显示当前)
+        target: Option<String>,
+    },
+    /// 通道看门狗 (退避探测 + 故障冻结 + 告警; cron 每分钟)
+    #[command(long_about = "通道看门狗: 探测 hy2 健康, 故障自动冻结到 ssh 兜底, 恢复自动回切。\n\n\
+        设计为 cron 每分钟调用一次 (单 tick, 无常驻进程):\n  \
+        1. hy2 探测失败 → 指数退避 (1m→2m→4m→…→cap 1h, ±20% 抖动) 掐掉重连风暴\n  \
+        2. 连续 2 次失败 → selector 冻结到 ssh-out (urltest 3m 周期太久)\n  \
+        3. 恢复探测通过 → 自动解冻交还 urltest\n  \
+        4. 状态翻转告警 (GNP_ALERT_CMD 钩子 / macOS 通知), 全程落 guard.log\n\n\
+        示例:\n  \
+        gnp-client guard                 # 手动跑一次 tick\n  \
+        gnp-client guard --install-cron  # 安装每分钟 cron")]
+    Guard {
+        /// 安装每分钟 cron 任务
+        #[arg(long)]
+        install_cron: bool,
+    },
     /// 从 gnp.cfg 接入（peer）
     #[command(long_about = "读取 gnp-server gen-user 生成的 gnp.cfg，一键完成安装。\n\n\
         cfg 字段: user-name / server-ip / server-port / peer-key\n\n\
@@ -132,19 +201,19 @@ enum Commands {
         cfg: String,
     },
     /// 安装 sing-box + 规则集 + 生成配置
-        #[command(long_about = "下载 sing-box 二进制 + 规则集, 生成 mixed+hysteria2 配置。\n\n\
+        #[command(long_about = "下载 sing-box 二进制 + 规则集, 生成双通道配置。\n\n\
             行为步骤:\n  \
             1. 下载 sing-box (with_quic, 支持 hysteria2)\n  \
             2. 下载规则集 (geosite-cn, geoip-cn, google, github, openai 等)\n  \
-            3. 生成 config.json (mixed + hysteria2 outbound 格式)\n  \
+            3. 生成 config.json (2026-10-05 P0 双通道形态):\n     \
+               route.final → proxy-out (selector)\n       \
+               → auto-out (urltest: hy2-out + ssh-out 自动降级/回切)\n       \
+               → hy2-out (QUIC, 可带 salamander obfs) + ssh-out (TCP 兜底)\n  \
             4. Linux 自动安装 systemd 系统级服务\n\n\
-            需要 server 地址/端口/密码。\n\n\
+            ssh 兜底默认开 (复用服务端 sshd, 密钥 ~/.ssh/id_ed25519, user=lw):\n  \
+            密钥不存在时 urltest 自动忽略 ssh-out, 仅日志噪音, 无需关闭。\n\n\
             示例:\n  \
-            gnp-client install \\\\\\n    \
-            --server 8.209.203.17 \\\\\\n    \
-            --password <密码> \\\\\\n    \
-            --server-port 443\n\n\
-            注意: 密码需要安全传输, 不要泄露。")]
+            gnp-client install --server 8.209.203.17 --password <密码> --server-port 443 --obfs-password <obfs密码>")]
         Install {
             /// 远端 hysteria2 server 地址 (IP 或域名)
             #[arg(long)]
@@ -155,6 +224,34 @@ enum Commands {
             /// server 端口 (默认 443, hysteria2/QUIC UDP)
             #[arg(long, default_value_t = 443)]
             server_port: u16,
+            /// salamander obfs 密码 (须与服务端 inbound 一致)
+            #[arg(long)]
+            obfs_password: Option<String>,
+            /// mixed 监听地址
+            #[arg(long, default_value = "0.0.0.0")]
+            listen: String,
+            /// 本地域名预定义解析 (aipro.host=192.168.1.2,lwtop.host=8.209.203.17)
+            #[arg(long)]
+            hosts: Option<String>,
+            /// 关闭 ssh 兜底 (单通道, 旧行为)
+            #[arg(long, default_value_t = false)]
+            no_ssh_fallback: bool,
+            /// ssh 兜底端口
+            #[arg(long, default_value_t = 22)]
+            ssh_port: u16,
+            /// ssh 兜底用户
+            #[arg(long, default_value = "lw")]
+            ssh_user: String,
+            /// ssh 私钥路径 (默认 ~/.ssh/id_ed25519)
+            #[arg(long)]
+            ssh_key: Option<String>,
+            /// 关闭 clash_api (switch/status/guard 依赖它)
+            #[arg(long, default_value_t = false)]
+            no_clash_api: bool,
+            /// 只生成配置文件到指定路径 (跳过规则下载/服务安装; 跨机部署用:
+            /// HOME=<目标机home> gnp-client install ... --out /tmp/x.json)
+            #[arg(long)]
+            out: Option<String>,
             /// 只下载 sing-box (不生成配置)
             #[arg(long)]
             bin_only: bool,
@@ -284,13 +381,63 @@ fn main() -> Result<()> {
         Commands::Config { show, check } => cmd_config(show, check),
         Commands::Tunnel => cmd_tunnel(),
         Commands::Test => cmd_test(),
+        Commands::Probe {
+            sizes,
+            count,
+            ssh_user,
+            ssh_port,
+            skip_handshake,
+            skip_mtu,
+        } => probe::run(probe::ProbeArgs {
+            sizes: sizes
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect(),
+            count,
+            ssh_user,
+            ssh_port,
+            skip_handshake,
+            skip_mtu,
+        }),
+        Commands::Switch { target } => switch::run(target),
+        Commands::Guard { install_cron } => guard::run(install_cron),
         Commands::Peer { cfg } => cmd_peer(&cfg),
         Commands::Install {
             server,
             password,
             server_port,
+            obfs_password,
+            listen,
+            hosts,
+            no_ssh_fallback,
+            ssh_port,
+            ssh_user,
+            ssh_key,
+            no_clash_api,
+            out,
             bin_only,
-        } => cmd_install(&server, &password, server_port, bin_only),
+        } => cmd_install(install::ClientConfigParams {
+            server: server.clone(),
+            password,
+            server_port,
+            obfs_password,
+            listen,
+            hosts: hosts.map(|h| parse_hosts(&h)).unwrap_or_default(),
+            ssh_fallback: if no_ssh_fallback {
+                None
+            } else {
+                Some(install::SshFallback {
+                    server: server.clone(),
+                    server_port: ssh_port,
+                    user: ssh_user,
+                    private_key_path: ssh_key
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(default_ssh_key),
+                })
+            },
+            clash_api_port: if no_clash_api { None } else { Some(9090) },
+            output: out.map(std::path::PathBuf::from),
+        }, bin_only),
         Commands::Register {
             client_id,
             list,
@@ -335,6 +482,23 @@ fn main() -> Result<()> {
     }
 }
 
+/// 默认 ssh 私钥路径 (~/.ssh/id_ed25519)
+fn default_ssh_key() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".ssh/id_ed25519")
+}
+
+/// 解析 --hosts "a.host=1.2.3.4,b.host=5.6.7.8"
+fn parse_hosts(s: &str) -> Vec<(String, String)> {
+    s.split(',')
+        .filter_map(|pair| {
+            let (k, v) = pair.trim().split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
 /// 从 gnp.cfg 接入
 fn cmd_peer(cfg_path: &str) -> Result<()> {
     let content = std::fs::read_to_string(cfg_path)
@@ -369,7 +533,10 @@ fn cmd_peer(cfg_path: &str) -> Result<()> {
         println!("✅ sing-box 已存在: {}", platform::sb_bin().display());
     }
     install::install_rules()?;
-    install::generate_config(&server, &password, port)?;
+    let mut params = install::ClientConfigParams::new(&server, &password, port);
+    // gnp.cfg 可选携带 obfs-pass (服务端 inbound 开 salamander 时必填)
+    params.obfs_password = kv.get("obfs-pass").cloned();
+    install::generate_config(&params)?;
     if platform == platform::Platform::Linux {
         service::install_linux()?;
     }
@@ -379,37 +546,39 @@ fn cmd_peer(cfg_path: &str) -> Result<()> {
 }
 
 /// 安装
-fn cmd_install(
-    server: &str,
-    password: &str,
-    server_port: u16,
-    bin_only: bool,
-) -> Result<()> {
+fn cmd_install(params: install::ClientConfigParams, bin_only: bool) -> Result<()> {
     let platform = platform::ensure_supported()?;
     println!("== gnp-client 安装 ({}) ==", platform.as_str());
 
-    // 1. 下载 sing-box
-    if !platform::sb_exists() {
-        install::install_singbox(None)?;
-    } else {
-        println!(
-            "✅ sing-box 已存在: {}",
-            platform::sb_bin().display()
-        );
+    // 1. 下载 sing-box (--out 只生成配置模式跳过, 供跨机部署)
+    if params.output.is_none() {
+        if !platform::sb_exists() {
+            install::install_singbox(None)?;
+        } else {
+            println!(
+                "✅ sing-box 已存在: {}",
+                platform::sb_bin().display()
+            );
+        }
     }
 
-    // 2. 下载规则集
-    install::install_rules()?;
+    // 2. 下载规则集 (--out 只生成配置模式跳过, 供跨机部署)
+    if params.output.is_none() {
+        install::install_rules()?;
+    }
 
     // 3. 生成配置 (除非 bin_only)
     if !bin_only {
-        install::generate_config(server, password, server_port)?;
+        install::generate_config(&params)?;
+        if params.output.is_some() {
+            return Ok(());
+        }
         println!("✅ 配置已生成, 运行 `gnp-client start` 启动");
     } else {
         println!("✅ 只安装了二进制 (--bin-only), 未生成配置");
     }
 
-    // 4. Linux: 安装 systemd 用户服务 (开机自启, 无需 root)
+    // 4. Linux: 安装 systemd 系统服务 (开机自启, 无需 root)
     if platform == platform::Platform::Linux {
         service::install_linux()?;
     }
@@ -489,6 +658,45 @@ fn cmd_status() -> Result<()> {
         match test_proxy_simple() {
             Ok((ip, ms)) => println!("  出口 IP: {} ({}ms)", ip, ms),
             Err(e) => println!("  出口检测失败: {}", e),
+        }
+    }
+
+    // 6. 通道状态 (双通道配置: selector/urltest + 各通道实时延迟)
+    if running {
+        if let Ok(v) = config::load(&platform::sb_config()) {
+            if let Some(sel) = config::find_outbound(&v, "selector") {
+                println!("\n🔀 通道:");
+                println!("  route.final: {}", config::final_outbound(&v).unwrap_or_default());
+                println!(
+                    "  selector 默认: {}",
+                    sel.get("default").and_then(|d| d.as_str()).unwrap_or("?")
+                );
+                if let Some(addr) = api::controller_addr() {
+                    if let Ok(proxies) = api::api_get_json(&addr, "/proxies", 2) {
+                        if let Some(now) = proxies.get("proxy-out").and_then(|p| p.get("now")).and_then(|n| n.as_str()) {
+                            println!("  当前生效 (热): {}", now);
+                        }
+                        if let Some(auto) = proxies.get("auto-out").and_then(|p| p.get("now")).and_then(|n| n.as_str()) {
+                            println!("  urltest 选中: {}", auto);
+                        }
+                        for tag in ["hy2-out", "ssh-out"] {
+                            let delay = proxies
+                                .get(tag)
+                                .and_then(|p| p.get("history"))
+                                .and_then(|h| h.as_array())
+                                .and_then(|arr| arr.last())
+                                .and_then(|e| e.get("delay"))
+                                .and_then(|d| d.as_u64());
+                            match delay {
+                                Some(ms) => println!("  {}: {}ms ✅", tag, ms),
+                                None => println!("  {}: 最近探测超时/失败 ❌", tag),
+                            }
+                        }
+                    }
+                } else {
+                    println!("  (旧配置无 clash_api — 重刷配置后可见热状态)");
+                }
+            }
         }
     }
 
