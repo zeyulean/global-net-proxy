@@ -1,20 +1,58 @@
 {
-  "log": { "level": "info", "timestamp": true },
   "inbounds": [
     {
-      "type": "hysteria2",
-      "tag": "hy2-in",
       "listen": "::",
-      "listen_port": 443,
-      "users": [ { "password": "gnp-quic-test-password" } ],
+      "listen_port": 5766,
+      "tag": "hy2-in",
       "tls": {
-        "enabled": true,
         "certificate_path": "/opt/gnp-quic/certs/server.crt",
+        "enabled": true,
         "key_path": "/opt/gnp-quic/certs/server.key"
+      },
+      "type": "hysteria2",
+      "users": [
+        {
+          "password": "gnp-quic-test-password"
+        },
+        {
+          "name": "mac-peertest",
+          "password": "gnp-acaba449a5f42c8248d2f412d1817e46"
+        },
+        {
+          "password": "gnp-e22fb564a4d38f65aa25be4fed38be"
+        },
+        {
+          "password": "gnp-f9edae36cc9e8b0f3f470d3d07db55b0"
+        },
+        {
+          "password": "gnp-12aad6a1475cea11deeda9cda90b7f67"
+        },
+        {
+          "password": "gnp-6745d66fce617e33e9e26f3692c6ce1d"
+        },
+        {
+          "password": "gnp-c878242f1adecf91a0aac60146c52eb8"
+        },
+        {
+          "name": "cozepc",
+          "password": "gnp-99e2e8cb6141a1a3d603c4133c6fe4e"
+        }
+      ],
+      "obfs": {
+        "type": "salamander",
+        "password": "gnp-obfs-20261005"
       }
     }
   ],
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
   "outbounds": [
-    { "type": "direct", "tag": "direct" }
-  ]
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "_comment": "lwtop gnp-hy2 实机同步 (2026-10-05, 端口 5766 + salamander obfs); 部署路径 /opt/gnp-quic/config.json"
 }
