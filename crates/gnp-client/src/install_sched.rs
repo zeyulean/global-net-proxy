@@ -127,12 +127,13 @@ pub fn uninstall() -> Result<()> {
             }
         }
         Platform::Linux => {
-            let lines = scheduler::read_crontab();
+            let user = cron_user();
+            let lines = scheduler::read_crontab_as(user.as_deref());
             let kept = scheduler::purge_gnp_cron_lines(&lines);
             if kept.len() == lines.len() {
                 println!("   - crontab 无 gnp 行, 无需改");
             } else {
-                scheduler::write_crontab(&kept)?;
+                scheduler::write_crontab_as(user.as_deref(), &kept)?;
                 println!("   - crontab 已剔除 gnp 行 (保留 {} 条其它任务)", kept.len());
             }
         }
@@ -299,11 +300,19 @@ pub fn stop_legacy_singbox() -> Vec<String> {
 // --- Linux ---
 
 fn write_cron(base: &Path) -> Result<()> {
+    // sudo 部署修复 (2026-10-05 aipro 实发): root 经 sudo 跑 migrate/install-scheduler
+    // 时裸 `crontab` 写的是 root 的表 → tick 以 root 跑、var/ 文件全 root 属主、
+    // 用户侧 guard 写不动 config.json。按部署 home 属主定向到真实用户。
+    let user = cron_user();
     // crontab: 剔旧 + 加一行 (坑清单 #4: Rust 端显式关 stdin)
-    let mut lines = scheduler::purge_gnp_cron_lines(&scheduler::read_crontab());
+    let mut lines = scheduler::purge_gnp_cron_lines(&scheduler::read_crontab_as(user.as_deref()));
     lines.push(scheduler::client_cron_line(base));
-    scheduler::write_crontab(&lines)?;
-    println!("✅ crontab 单行: {}", scheduler::client_cron_line(base));
+    scheduler::write_crontab_as(user.as_deref(), &lines)?;
+    println!(
+        "✅ crontab 单行{}: {}",
+        user.as_ref().map(|u| format!(" (@{})", u)).unwrap_or_default(),
+        scheduler::client_cron_line(base)
+    );
     Ok(())
 }
 
@@ -378,12 +387,13 @@ pub fn purge_legacy() -> Vec<String> {
     match Platform::detect() {
         Platform::MacOs => done.extend(scheduler::remove_legacy_launchd()),
         Platform::Linux => {
-            let lines = scheduler::read_crontab();
+            let user = cron_user();
+            let lines = scheduler::read_crontab_as(user.as_deref());
             // 保留当前 base 的 tick 行 —— 清旧发生在装新之后 (install/migrate 收尾),
             // 用全量 purge 会把刚装好的 tick 一起删掉 (lwmate 实迁踩过)
             let kept = scheduler::purge_gnp_cron_lines_keep_tick(&lines, &platform::gnp_home());
             if kept.len() != lines.len() {
-                if scheduler::write_crontab(&kept).is_ok() {
+                if scheduler::write_crontab_as(user.as_deref(), &kept).is_ok() {
                     done.push(format!(
                         "crontab 剔除旧 gnp 行 {} 条 (新 tick 行已保留)",
                         lines.len() - kept.len()
@@ -438,5 +448,73 @@ fn dir_owner_name(dir: &Path) -> Option<String> {
     {
         let _ = dir;
         None
+    }
+}
+
+// --- sudo 部署修复 (2026-10-05 aipro 实发: 迁移经 sudo 跑出两个雷) ---
+// 雷 1: tick 行写进 root 的 crontab → tick/guard 以 root 跑, var/ 文件全 root 属主
+// 雷 2: 部署根整体 root 属主 → 用户 cron 的 guard 写不动 config.json → 冻结半失败
+// 根因都是"root 经 sudo 部署用户级布局"。修复 = 按 home 属主把 crontab 和文件
+// 归还给真实用户; /opt (服务端布局, root-only 密码) 与 root 直登 (cozepc) 不受影响。
+
+/// 当前是否以 root 运行 (unix)
+fn running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// root 经 sudo 部署时, crontab 的归属用户 (非 root 场景返回 None = 当前用户)
+fn cron_user() -> Option<String> {
+    if !running_as_root() {
+        return None;
+    }
+    current_user().filter(|u| u != "root")
+}
+
+/// sudo 部署属主归还: 把部署根 chown 给真实登录用户
+///
+/// migrate/install 收尾调用。幂等 (属主已正确时 chown 是空操作)。
+pub fn fix_deploy_ownership(base: &Path) {
+    #[cfg(not(unix))]
+    {
+        let _ = base;
+    }
+    #[cfg(unix)]
+    {
+        if !running_as_root() || base.starts_with("/opt/") {
+            return; // 非 sudo / 服务端布局 (root-only) 不动
+        }
+        // 部署根可能已被写坏成 root 属主 → 回退用 SUDO_USER 判定登录用户
+        let owner = dir_owner_name(platform::target_home().unwrap_or_else(|| base.to_path_buf()).as_path())
+            .or_else(|| {
+                std::env::var("SUDO_USER")
+                    .ok()
+                    .filter(|u| !u.is_empty() && u != "root")
+            });
+        let Some(user) = owner else {
+            return; // root 直登 (cozepc) 或判不出 → 保持现状
+        };
+        match Command::new("chown").args(["-R", &user]).arg(base).status() {
+            Ok(s) if s.success() => {
+                println!("✅ 部署根属主已归还 {} (sudo 部署修复): {}", user, base.display())
+            }
+            _ => println!(
+                "⚠️  chown -R {} {} 失败 — 用户 cron/guard 可能写不动配置",
+                user,
+                base.display()
+            ),
+        }
     }
 }

@@ -197,6 +197,10 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
         println!("   旧目录不存在 (可能已迁过)");
     }
 
+    // sudo 部署属主归还 (root 经 sudo 跑 migrate 会把部署根写成 root 属主 —
+    // 2026-10-05 aipro 实发, tick 进 root crontab + guard 写不动 config.json 的根因)
+    crate::install_sched::fix_deploy_ownership(&base);
+
     // --- 6. 验证清单 ---
     println!("\n[6/6] 验证清单");
     print_checklist();

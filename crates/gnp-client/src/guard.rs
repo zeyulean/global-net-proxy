@@ -120,19 +120,30 @@ fn tick() -> Result<()> {
             st.last_heartbeat_ms = now;
             st.next_probe_ms = 0;
 
-            // 严格 hy2 优先 (plan 4.3): urltest 按"最快+tolerance 300ms"选路,
-            // hy2 恢复后可能因差距不足 300ms 一直留在 ssh (实测 cozepc: 155ms vs 326ms)。
-            // guard 在 hy2 健康且 selector=auto-out 时把 urltest 卡在 ssh 的情况
-            // 纠正为 hy2-out; 手动 switch ssh (selector≠auto-out) 不受影响。
-            if !was_down {
+            // 一致性自愈 (任何来源的不一致都能收敛, 手动 pin 不碰):
+            // - 半冻结残留: 热选=ssh-out 但 config default=auto-out 且未 frozen
+            //   (2026-10-05 aipro 实发: set_selector 半失败 —— 热切成功、config 写回失败,
+            //    旧版 frozen=false → 恢复/防粘滞路径都不收拾, 永久卡 ssh-out)
+            // - urltest 粘滞: selector=auto-out 而 urltest 因 tolerance 卡 ssh-out (cozepc 实测)
+            if !st.frozen {
                 if let Ok(proxies) = api::proxies_map(&addr, 2) {
                     let sel_now = api::proxy_now(&proxies, "proxy-out");
                     let auto_now = api::proxy_now(&proxies, "auto-out");
-                    if sel_now.as_deref() == Some("auto-out") && auto_now.as_deref() == Some("ssh-out") {
-                        log("INFO  hy2 健康但 urltest 因 tolerance 停在 ssh-out → 强制 hy2-out");
-                        if let Err(e) = crate::switch::set_selector("hy2-out") {
-                            log(&format!("ERROR 强制 hy2 失败: {}", e));
+                    let cfg_default = selector_default_in_config();
+                    match heal_action(sel_now.as_deref(), auto_now.as_deref(), cfg_default.as_deref()) {
+                        Some("auto-out") => {
+                            log("INFO  半冻结残留 (热=ssh-out, config=auto-out) → 回 auto-out");
+                            if let Err(e) = crate::switch::set_selector("auto-out") {
+                                log(&format!("ERROR 残留修复失败: {}", e));
+                            }
                         }
+                        Some("hy2-out") => {
+                            log("INFO  hy2 健康但 urltest 因 tolerance 停在 ssh-out → 强制 hy2-out");
+                            if let Err(e) = crate::switch::set_selector("hy2-out") {
+                                log(&format!("ERROR 强制 hy2 失败: {}", e));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -155,28 +166,32 @@ fn tick() -> Result<()> {
             ));
 
             if st.failures >= g.freeze_after_failures && !st.frozen {
+                // 先记账再动作 (2026-10-05 aipro 实发): set_selector 半失败时旧版不标
+                // frozen, 恢复路径 (if st.frozen) 和防粘滞都不会收拾 → 永久卡 ssh-out。
+                // 标了 frozen, 恢复探测一通过就一定尝试回 auto-out。
+                st.frozen = true;
+                st.last_alert_ms = now;
                 match crate::switch::set_selector("ssh-out") {
-                    Ok(_) => {
-                        st.frozen = true;
-                        st.last_alert_ms = now;
-                        log("WARN  已冻结到 ssh-out (TCP 兜底免疫 UDP MTU 黑洞)");
-                        // 实测 (2026-10-05): 长跑实例里 ssh-out 可能僵死 (直接 ssh 正常但
-                        // 出站连探测都挂), 冻结后重启服务确保兜底通道干净可用
-                        if let Ok(p) = platform::ensure_supported() {
-                            let _ = gnp_core::service::stop(p);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            match gnp_core::service::start(p) {
-                                Ok(()) => log("OK    sing-box 已重启 (确保 ssh-out 干净)"),
-                                Err(e) => log(&format!("ERROR 重启失败: {}", e)),
-                            }
-                        }
-                        alert(
-                            "gnp 通道降级",
-                            &format!("hy2 连续 {} 次探测失败, 已冻结到 ssh 兜底; 恢复后自动回切", st.failures),
-                        );
-                    }
-                    Err(e) => log(&format!("ERROR 冻结失败: {}", e)),
+                    Ok(_) => log("WARN  已冻结到 ssh-out (TCP 兜底免疫 UDP MTU 黑洞)"),
+                    Err(e) => log(&format!(
+                        "ERROR 冻结切换失败 (urltest 仍会自行落到 ssh-out): {}",
+                        e
+                    )),
                 }
+                // 实测 (2026-10-05): 长跑实例里 ssh-out 可能僵死 (直接 ssh 正常但
+                // 出站连探测都挂), 冻结后重启服务确保兜底通道干净可用 —— 切换成败都要试
+                if let Ok(p) = platform::ensure_supported() {
+                    let _ = gnp_core::service::stop(p);
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    match gnp_core::service::start(p) {
+                        Ok(()) => log("OK    sing-box 已重启 (确保 ssh-out 干净)"),
+                        Err(e) => log(&format!("ERROR 重启失败: {}", e)),
+                    }
+                }
+                alert(
+                    "gnp 通道降级",
+                    &format!("hy2 连续 {} 次探测失败, 已冻结到 ssh 兜底; 恢复后自动回切", st.failures),
+                );
             } else if st.frozen && now.saturating_sub(st.last_alert_ms) > ALERT_REPEAT_MS {
                 st.last_alert_ms = now;
                 alert(
@@ -256,4 +271,77 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+// --- 一致性自愈 (纯逻辑, 可单测) ---
+
+/// 读 config.json 里 selector 的 default (重启后的权威值)
+fn selector_default_in_config() -> Option<String> {
+    let v = gnp_core::config::load(&platform::gnp_config_json()).ok()?;
+    gnp_core::config::find_outbound(&v, "selector")?
+        .get("default")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// 健康态收敛决策:
+/// - (热=ssh-out, config=auto-out)   → 回 auto-out (半冻结残留, 任何来源)
+/// - (热=auto-out, urltest=ssh-out)  → 强制 hy2-out (tolerance 粘滞, cozepc 实测)
+/// - 手动 switch ssh (热=ssh-out 且 config=ssh-out) → 不碰 (用户意图)
+/// - config 读不到 → 保守不碰 (无法与手动 pin 区分)
+fn heal_action(
+    sel_now: Option<&str>,
+    auto_now: Option<&str>,
+    cfg_default: Option<&str>,
+) -> Option<&'static str> {
+    if matches!((sel_now, cfg_default), (Some("ssh-out"), Some("auto-out"))) {
+        return Some("auto-out");
+    }
+    if matches!((sel_now, auto_now), (Some("auto-out"), Some("ssh-out"))) {
+        return Some("hy2-out");
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::heal_action;
+
+    /// 2026-10-05 aipro 实发: 热切成功+config 写回失败 → 永久卡 ssh-out
+    #[test]
+    fn half_frozen_leftover_recovers_to_auto() {
+        assert_eq!(
+            heal_action(Some("ssh-out"), Some("hy2-out"), Some("auto-out")),
+            Some("auto-out")
+        );
+    }
+
+    /// 手动 `gnpc switch ssh` 热态与 config 同为 ssh-out —— 用户意图, 不碰
+    #[test]
+    fn manual_ssh_pin_is_respected() {
+        assert_eq!(heal_action(Some("ssh-out"), Some("ssh-out"), Some("ssh-out")), None);
+    }
+
+    /// urltest tolerance 粘滞 (cozepc 实测: hy2 155ms vs ssh 326ms 不切)
+    #[test]
+    fn urltest_stickiness_forces_hy2() {
+        assert_eq!(
+            heal_action(Some("auto-out"), Some("ssh-out"), Some("auto-out")),
+            Some("hy2-out")
+        );
+    }
+
+    /// config 不可读 → 无法区分手动 pin, 保守不碰
+    #[test]
+    fn unreadable_config_is_conservative() {
+        assert_eq!(heal_action(Some("ssh-out"), Some("hy2-out"), None), None);
+    }
+
+    #[test]
+    fn healthy_state_is_untouched() {
+        assert_eq!(
+            heal_action(Some("auto-out"), Some("hy2-out"), Some("auto-out")),
+            None
+        );
+    }
 }

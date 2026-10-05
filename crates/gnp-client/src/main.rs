@@ -653,6 +653,10 @@ fn cmd_install(config: &Option<String>, bin_only: bool) -> Result<()> {
     if plat == platform::Platform::Linux {
         service::install_linux()?;
     }
+
+    // sudo 部署属主归还 (root 经 sudo 跑 install 与 migrate 同理, 见 install_sched)
+    crate::install_sched::fix_deploy_ownership(&platform::gnp_home());
+
     println!("\n✅ 安装完成。启动: gnpc install-scheduler && gnpc start");
     Ok(())
 }

@@ -54,7 +54,16 @@ pub fn set_selector(target: &str) -> Result<String> {
         bail!("{} 不在 selector {} 组内 (成员: {:?})", target, sel_tag, members);
     }
 
-    // 1) 热切换 (立即生效)
+    // 1) 先写回 config default (提交点): 失败即整体失败、热状态未动。
+    //    (2026-10-05 aipro 实发: 原顺序"先热切后写回", 写回失败时热态已切而配置未变
+    //     —— 半失败态; guard 若没标 frozen 会永久卡在 ssh-out 不自愈)
+    if let Some(sel) = gnp_core::config::find_outbound_mut(&mut v, &sel_tag) {
+        sel["default"] = json!(target);
+    }
+    gnp_core::config::save(&cfg_path, &v)?;
+    println!("💾 config selector default 已写回: {}", target);
+
+    // 2) 热切换 (立即生效)
     let mut mode = None;
     if let Some(addr) = api::controller_addr() {
         if api::api_put(&addr, &format!("/proxies/{}", sel_tag), &json!({ "name": target }).to_string()).is_ok() {
@@ -62,13 +71,6 @@ pub fn set_selector(target: &str) -> Result<String> {
             println!("🔥 热切换生效: {} → {} (clash_api)", sel_tag, target);
         }
     }
-
-    // 2) 写回 config default (重启后仍生效)
-    if let Some(sel) = gnp_core::config::find_outbound_mut(&mut v, &sel_tag) {
-        sel["default"] = json!(target);
-    }
-    gnp_core::config::save(&cfg_path, &v)?;
-    println!("💾 config selector default 已写回: {}", target);
 
     match mode {
         Some(_) => Ok("api+config".to_string()),

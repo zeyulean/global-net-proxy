@@ -200,7 +200,16 @@ pub fn systemd_unit_path(name: &str) -> PathBuf {
 
 /// 读当前 crontab 行 (无 crontab 时空)
 pub fn read_crontab() -> Vec<String> {
-    match Command::new("crontab").args(["-l"]).output() {
+    read_crontab_as(None)
+}
+
+/// 指定用户读 crontab (None=当前调用者); root 经 sudo 部署时用 `crontab -u <user>`
+pub fn read_crontab_as(user: Option<&str>) -> Vec<String> {
+    let mut cmd = Command::new("crontab");
+    if let Some(u) = user {
+        cmd.args(["-u", u]);
+    }
+    match cmd.args(["-l"]).output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(|s| s.to_string())
@@ -211,13 +220,23 @@ pub fn read_crontab() -> Vec<String> {
 
 /// 写 crontab (Rust 端显式 `stdin.take()` 关管道; 不关则永久挂起)
 pub fn write_crontab(lines: &[String]) -> Result<()> {
+    write_crontab_as(None, lines)
+}
+
+/// 指定用户写 crontab (None=当前调用者); root 经 sudo 部署时用 `crontab -u <user>`
+/// (坑清单 #4: Rust 端显式 `stdin.take()` 关管道; 不关则永久挂起)
+pub fn write_crontab_as(user: Option<&str>, lines: &[String]) -> Result<()> {
     use std::io::Write;
     let content = if lines.is_empty() {
         String::new()
     } else {
         format!("{}\n", lines.join("\n"))
     };
-    let mut st = Command::new("crontab")
+    let mut spawn = Command::new("crontab");
+    if let Some(u) = user {
+        spawn.args(["-u", u]);
+    }
+    let mut st = spawn
         .args(["-"])
         .stdin(std::process::Stdio::piped())
         .spawn()
