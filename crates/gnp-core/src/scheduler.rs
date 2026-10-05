@@ -149,6 +149,31 @@ pub fn write_tick_script(base: &Path) -> Result<PathBuf> {
     Ok(dest)
 }
 
+/// 清掉 launchd 里的 disabled 覆盖 (`launchctl enable <domain>/<label>`)
+///
+/// ⚠️ 2026-10-05 踩坑: `launchctl unload **-w**` 会把 "disabled" 持久写进
+/// launchd 数据库, 之后 `load` 一律 EIO (Input/output error) 且 `launchctl list`
+/// 看不见 job —— 表现为"迁移后代理彻底没了, 但看不出原因"。
+/// 所以本模块一律用不带 -w 的 unload, 且装载前先 enable。
+pub fn launchd_enable(label: &str) {
+    for domain in ["gui", "user"] {
+        let _ = Command::new("launchctl")
+            .args(["enable", &format!("{}/{}", domain, uid()), label])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+fn uid() -> u32 {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(501)
+}
+
 /// launchd plist 路径 (~/Library/LaunchAgents/<label>.plist)
 pub fn launchd_plist_path(label: &str) -> PathBuf {
     platform::home_dir()
@@ -231,10 +256,14 @@ pub fn remove_legacy_launchd() -> Vec<String> {
             continue;
         }
         let _ = Command::new("launchctl")
-            .args(["unload", "-w", plist.to_str().unwrap_or("")])
+            .args(["unload", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
         let _ = Command::new("launchctl")
             .args(["remove", label])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
         let bak = plist.with_extension("plist.migrated");
         match std::fs::rename(&plist, &bak) {

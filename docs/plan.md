@@ -285,6 +285,11 @@ sudo systemctl disable gnp-hy2; sudo mv /opt/gnp-quic /opt/gnp/backups/gnp-quic-
 11. 服务端端口改动必须 ufw+云安全组双侧、且 ufw 持久化（禁裸 iptables）；docker 发布端口绕过 ufw
 12. vmwin shell 是 cmd 不是 PowerShell；Windows sing-box 用 VBS 隐形启动（弹黑窗坑）
 13. 跨机 scp 后必 md5；远端跑脚本先 scp 成文件再执行（ssh heredoc 转义必炸）
+14. **`launchctl unload -w` 会把 disabled 持久写进 launchd 数据库**（`launchctl print-disabled gui/$(id -u)` 可见）→ 之后 `load` 一律 EIO、`launchctl list` 看不见 job，表现为"代理彻底没了但查不出原因"。一律用不带 `-w` 的 unload / `bootout`，装载前先 `launchctl enable gui/$(id -u)/<label>`（2026-10-05 Mac 迁移实测，代理断了一次）
+15. `launchctl load` 的 stderr 不可信：未装载/切换中的 job 也会打 EIO；**判定成功要看 `launchctl list` 里有没有 label**。且这些噪音会经 tick.sh 落进 `var/tick.log` 冒充告警 → 所有 launchctl 调用一律静音 stderr
+16. unload 与 load 之间留 ~400ms：立刻 load 会 EIO（job 还在切换中）
+17. 同机迁移端口互斥：新旧 sing-box 都占 `127.0.0.1:1080`，旧的不让位新的必 crash-loop，而 `launchctl list` 显示 job 存在会让人误判成功 → 顺序必须是"落盘 → 停旧（留 plist 可回滚）→ 装载 → **验证进程+端口+出口 IP** → 才拆旧"
+18. 回滚脚本必须考虑旧 plist 已被移成 `.migrated`：直接 `launchctl load` 原路径是空转，会把机器留在"什么都没装"的状态
 
 ### 7.4 收尾
 

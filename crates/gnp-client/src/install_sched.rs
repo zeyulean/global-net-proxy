@@ -8,7 +8,7 @@
 //! 常驻 sing-box 服务是独立 KeepAlive 单元, **不与 tick 合并** (生命周期不同)。
 //! 但 macOS 上两个 launchd plist 一起写 (都在 LaunchAgents), 便于一次装齐。
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::Path;
 use std::process::Command;
 
@@ -70,6 +70,25 @@ pub fn install_with(load: bool) -> Result<()> {
     Ok(())
 }
 
+/// 装载已落盘的调度 + 常驻服务 (与 `install_with(false)` 配对)
+///
+/// migrate 用两段式: 先落盘 (不动运行中的服务) → 停旧让位端口 → 这里装载。
+/// 注意 tick 也必须装载 —— 只装常驻服务等于调度没接上 (§7.1 验收 2 会挂)。
+pub fn load_now() -> Result<()> {
+    let base = platform::gnp_home();
+    match Platform::detect() {
+        Platform::MacOs => load_plists(),
+        Platform::Linux => {
+            write_cron(&base)?;
+            // 系统级 gnpc.service (需 root; 无权限时 install_linux 会打印命令)
+            gnp_core::service::install_linux()?;
+            let _ = gnp_core::service::start_named(scheduler::SYSTEMD_CLIENT);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// 卸调度 (只拆调度, 不停常驻 sing-box —— 那是 `gnpc stop` 的事)
 pub fn uninstall() -> Result<()> {
     let base = platform::gnp_home();
@@ -78,7 +97,7 @@ pub fn uninstall() -> Result<()> {
         Platform::MacOs => {
             for label in [scheduler::LAUNCHD_TICK, scheduler::LAUNCHD_SINGBOX] {
                 let plist = scheduler::launchd_plist_path(label);
-                let _ = Command::new("launchctl").args(["unload", "-w", plist.to_str().unwrap_or("")]).status();
+                let _ = Command::new("launchctl").args(["unload", plist.to_str().unwrap_or("")]).status();
                 let _ = Command::new("launchctl").args(["remove", label]).status();
                 if plist.exists() {
                     match std::fs::remove_file(&plist) {
@@ -136,16 +155,39 @@ pub fn load_plists() -> Result<()> {
         (scheduler::LAUNCHD_TICK, "tick 60s"),
     ] {
         let plist = scheduler::launchd_plist_path(label);
+        // 先清 disabled 覆盖 (unload -w 留下的坑), 否则 load 静默失败
+        scheduler::launchd_enable(label);
         let _ = Command::new("launchctl")
-            .args(["unload", "-w", plist.to_str().unwrap_or("")])
+            .args(["unload", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
         let _ = Command::new("launchctl")
             .args(["remove", label])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
-        Command::new("launchctl")
+        // unload 到 load 之间留一拍: 立刻 load 会 EIO (job 还在切换中)
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = Command::new("launchctl")
             .args(["load", plist.to_str().unwrap_or("")])
-            .status()
-            .with_context(|| format!("launchctl load {} 失败", plist.display()))?;
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        // 以 launchctl list 为准 (load 的 stderr 不可信)
+        let listed = Command::new("launchctl")
+            .args(["list"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(label))
+            .unwrap_or(false);
+        if !listed {
+            anyhow::bail!(
+                "launchd {} 装载失败 (plist {})。查 launchctl print-disabled gui/$(id -u) | grep {}",
+                label,
+                plist.display(),
+                label
+            );
+        }
         println!("✅ launchd {} ({}): {}", label, log, plist.display());
     }
     Ok(())
@@ -170,9 +212,15 @@ pub fn stop_legacy_singbox() -> Vec<String> {
             continue;
         }
         let _ = Command::new("launchctl")
-            .args(["unload", "-w", plist.to_str().unwrap_or("")])
+            .args(["unload", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
-        let _ = Command::new("launchctl").args(["remove", label]).status();
+        let _ = Command::new("launchctl")
+            .args(["remove", label])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
         // 文件留着 (purge_legacy 才移走) —— verify 失败要能原样装回来
         done.push(format!("{} 已停 (plist 保留待回滚)", label));
     }

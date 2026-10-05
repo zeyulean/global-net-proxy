@@ -141,13 +141,18 @@ fn start_macos() -> Result<()> {
             .with_context(|| format!("写入 plist 失败: {}", plist.display()))?;
     }
     // 已加载过先 unload, 保证新内容生效 (幂等)
+    // 注意: launchctl 对"未装载/切换中"的 job 会打 EIO 到 stderr, 那是常态不是故障;
+    // 一律静音, 否则会经 tick.sh 落进 var/tick.log 冒充告警。
     let _ = Command::new("launchctl")
         .args(["unload", plist.to_str().unwrap_or("")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     let _ = Command::new("launchctl")
         .args(["load", plist.to_str().unwrap_or("")])
-        .status()
-        .context("launchctl load 失败")?;
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     if !is_running_macos()? {
         bail!("sing-box 启动失败 (launchctl load 后未运行)");
     }
@@ -159,6 +164,8 @@ fn stop_macos() -> Result<()> {
     if plist.exists() {
         let _ = Command::new("launchctl")
             .args(["unload", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
     }
     let _ = Command::new("pkill").args(["-f", "sing-box run"]).status();

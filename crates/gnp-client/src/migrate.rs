@@ -12,7 +12,7 @@
 //! 6. 输出验证清单
 
 use anyhow::{bail, Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gnp_core::platform;
 use gnp_core::settings::{ClientAuth, ClientLocal, ClientServer, ClientSettings, GuardSettings};
@@ -37,7 +37,7 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
     }
 
     // --- 1. 唯一事实源 ---
-    let settings = resolve_settings(args, &legacy_cfg)?;
+    let (settings, verbatim) = resolve_settings(args, &legacy_cfg)?;
     settings.validate()?;
     println!("\n[1/6] 唯一事实源");
     println!("   server: {}:{}", settings.server.host, settings.server.hy2_port);
@@ -62,7 +62,18 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
     // --- 2. 落事实源 + 搬资产 ---
     println!("\n[2/6] 布局与资产");
     platform::ensure_layout(&base)?;
-    let toml_path = settings.save_default()?;
+    let toml_path = match &verbatim {
+        Some(src) => {
+            // 逐字拷贝 (保住注释与格式 → 与 deploy/hosts/<host>.toml md5 一致)
+            let dst = platform::gnp_config_toml();
+            let content = std::fs::read(src)
+                .with_context(|| format!("读取 {} 失败", src.display()))?;
+            platform::write_private(&dst, &String::from_utf8_lossy(&content))?;
+            println!("   config.toml: {} ← 逐字来自 {}", dst.display(), src.display());
+            dst
+        }
+        None => settings.save_default()?,
+    };
     println!("   config.toml: {}", toml_path.display());
 
     // sing-box 二进制: 旧目录 → bin/ (新目录已有则跳过, 保留新版本)
@@ -123,33 +134,24 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
     for s in &stopped {
         println!("   - {}", s);
     }
-    // 让 sing-box 释放监听 (停后最多等 3s)
-    for _ in 0..30 {
-        if !platform::port_open(1080) {
-            break;
+    // 让 sing-box 释放监听 (只有真停了旧服务才需要等)
+    if !stopped.is_empty() {
+        for _ in 0..30 {
+            if !platform::port_open(1080) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    if platform::port_open(1080) {
-        println!("   ⚠️  1080 仍被占 —— 可能有别的进程持有, 继续尝试装载");
+        if platform::port_open(1080) {
+            println!("   ⚠️  1080 仍被占 —— 可能有别的进程持有, 继续尝试装载");
+        }
     }
 
-    let plat = match platform::ensure_supported() {
-        Ok(p) => p,
-        Err(e) => {
-            rollback_legacy();
-            return Err(e);
-        }
-    };
-    if platform::ensure_supported().is_ok() {
-        match gnp_core::service::start(plat) {
-            Ok(()) => {}
-            Err(e) => {
-                println!("   ❌ 新服务启动失败: {}", e);
-                rollback_legacy();
-                anyhow::bail!("迁移中止: 新服务起不来, 已把旧服务原样装回");
-            }
-        }
+    // 装载新常驻 + 新调度 (tick 也在这步, 漏了就等于调度没接上)
+    if let Err(e) = install_sched::load_now() {
+        println!("   ❌ 装载失败: {}", e);
+        rollback_legacy();
+        anyhow::bail!("迁移中止: 装载失败, 已把旧服务原样装回");
     }
 
     let verified = verify_new_service();
@@ -204,19 +206,28 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
 
 // --- 事实源解析 ---
 
-fn resolve_settings(args: &MigrateArgs, legacy_cfg: &Path) -> Result<ClientSettings> {
+/// 取事实源: 返回 (settings, 逐字来源文件)
+///
+/// 逐字来源非 None 时, 落盘用**原文件字节拷贝**而不是重新序列化 —— 否则
+/// §7.1 验收 6 的 md5 比对必然失败 (注释/格式会变), §5 的
+/// "scp deploy/hosts/<host>.toml → gnpc migrate" 也会被改写。
+fn resolve_settings(
+    args: &MigrateArgs,
+    legacy_cfg: &Path,
+) -> Result<(ClientSettings, Option<PathBuf>)> {
     // a) 显式 --config
     if let Some(p) = &args.config {
+        let path = PathBuf::from(p);
         println!("[0/6] 事实源 = {}", p);
-        return ClientSettings::load(Path::new(p));
+        return Ok((ClientSettings::load(&path)?, Some(path)));
     }
-    // b) 新布局已有 (多半是刚 scp 过来的 deploy/hosts/<host>.toml → md5 比对靠这个)
+    // b) 新布局已有 (多半是刚 scp 过来的 deploy/hosts/<host>.toml)
     let cur = platform::gnp_config_toml();
     if cur.exists() {
         println!("[0/6] 事实源 = 已有 {}", cur.display());
-        return ClientSettings::load(&cur);
+        return Ok((ClientSettings::load(&cur)?, None));
     }
-    // c) 解析旧 config.json
+    // c) 解析旧 config.json (只能重新序列化, 没有 toml 可抄)
     println!("[0/6] 事实源 = 解析旧 {}", legacy_cfg.display());
     if !legacy_cfg.exists() {
         bail!(
@@ -225,7 +236,7 @@ fn resolve_settings(args: &MigrateArgs, legacy_cfg: &Path) -> Result<ClientSetti
             legacy_cfg.display()
         );
     }
-    settings_from_legacy(legacy_cfg)
+    Ok((settings_from_legacy(legacy_cfg)?, None))
 }
 
 /// 旧 config.json → ClientSettings (只取 gnp 关心的字段, 其余不管)
@@ -452,14 +463,27 @@ fn rollback_legacy() {
     println!("↩︎  回滚: 装回旧服务 {}", gnp_core::scheduler::LEGACY_LAUNCHD.join(", "));
     for label in gnp_core::scheduler::LEGACY_LAUNCHD {
         let plist = gnp_core::scheduler::launchd_plist_path(label);
+        // plist 可能在 purge 阶段已被移成 .migrated —— 移回来再装, 否则回滚是空转
         if !plist.exists() {
-            continue;
+            let moved = gnp_core::scheduler::launchd_plist_path(label)
+                .with_extension("plist.migrated");
+            if moved.exists() {
+                let _ = std::fs::rename(&moved, &plist);
+                println!("   - 恢复 plist {}", plist.display());
+            } else {
+                continue;
+            }
         }
+        gnp_core::scheduler::launchd_enable(label);
         let _ = std::process::Command::new("launchctl")
-            .args(["unload", "-w", plist.to_str().unwrap_or("")])
+            .args(["unload", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
         let _ = std::process::Command::new("launchctl")
             .args(["load", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
         println!("   - 已装回 {}", label);
     }
@@ -470,9 +494,15 @@ fn rollback_legacy() {
     for label in [gnp_core::scheduler::LAUNCHD_TICK, gnp_core::scheduler::LAUNCHD_SINGBOX] {
         let plist = gnp_core::scheduler::launchd_plist_path(label);
         let _ = std::process::Command::new("launchctl")
-            .args(["unload", "-w", plist.to_str().unwrap_or("")])
+            .args(["unload", plist.to_str().unwrap_or("")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
-        let _ = std::process::Command::new("launchctl").args(["remove", label]).status();
+        let _ = std::process::Command::new("launchctl")
+            .args(["remove", label])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 
