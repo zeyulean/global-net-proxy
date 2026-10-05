@@ -112,9 +112,19 @@ pub fn server_unit(base: &Path) -> Result<String> {
     render_owned(UNIT_SERVER, server_vars(base))
 }
 
-/// crontab 单行 (客户端: 直接路径; 服务端: 显式 GNP_HOME, tick.sh 默认按 $HOME 找 BASE)
+/// crontab 单行 (客户端)
+///
+/// **必须显式带 GNP_HOME**: cron 的 $HOME 取决于"谁的 crontab"。
+/// aipro 是用 sudo 跑的 (要写系统级 gnpc.service), 于是这行进的是 **root** 的
+/// crontab —— tick.sh 按 $HOME 推 BASE 会得到 /root/.local/gnp, 找不到
+/// $BASE/bin/gnpc, 内核组件"缺席=静默" → guard 永远不跑, 且无任何报错。
+/// 显式写死最省事: 用户 crontab 场景下它与默认值一致, 无副作用。
 pub fn client_cron_line(base: &Path) -> String {
-    format!("* * * * * {}", base.join("bin/tick.sh").display())
+    format!(
+        "* * * * * GNP_HOME={} {}",
+        base.display(),
+        base.join("bin/tick.sh").display()
+    )
 }
 pub fn server_cron_line(base: &Path) -> String {
     format!("* * * * * GNP_HOME={} {}", base.display(), base.join("bin/tick.sh").display())
@@ -237,6 +247,20 @@ pub fn is_gnp_cron_line(line: &str) -> bool {
 }
 
 /// 剔除所有 gnp 旧行 (保留用户其它 cron)
+///
+/// `keep_new_tick`: 保留"当前 base 的 tick 行" —— 清旧必须发生在装新**之后**的场景下
+/// (migrate 的收尾), 否则会把刚装好的 tick 一起删掉 (lwmate 实迁踩过: crontab 里
+/// tick 行神秘消失)。旧调度行 (gnp-client guard / update-rules) 照删。
+pub fn purge_gnp_cron_lines_keep_tick(lines: &[String], base: &std::path::Path) -> Vec<String> {
+    let new_tick = base.join("bin/tick.sh").display().to_string();
+    lines
+        .iter()
+        .filter(|l| !(is_gnp_cron_line(l) && !l.contains(&new_tick)))
+        .cloned()
+        .collect()
+}
+
+/// 剔除所有 gnp 旧行 (含新 tick 行; 只在"装新之前"用)
 pub fn purge_gnp_cron_lines(lines: &[String]) -> Vec<String> {
     lines
         .iter()
@@ -293,21 +317,48 @@ pub fn disable_legacy_systemd() -> Vec<String> {
     done
 }
 
-/// 禁用旧 systemd **用户级** 单元 (aipro 的 --user sing-box)
+/// 禁用旧 systemd **用户级** 单元 (aipro 的 `--user sing-box`)
+///
+/// 必须切到那个用户去停: root 直接跑 `systemctl --user` 连的是 **root 的**
+/// user manager, 停不到 lwboy 的单元 (aipro 实迁踩过 → 旧服务仍占 1080,
+/// 新 gnpc crash-loop)。所以: 当前就是该用户 → 直连; 否则 `sudo -u <user>` + XDG_RUNTIME_DIR。
 pub fn disable_legacy_systemd_user(user: &str) -> Vec<String> {
     let mut done = Vec::new();
+    let uid = uid_of(user);
+    let runtime = format!("/run/user/{}", uid);
+    let self_user = current_username();
     for name in LEGACY_SYSTEMD_USER {
-        let out = Command::new("systemctl")
-            .args(["--user", "disable", "--now", name])
-            .env("XDG_RUNTIME_DIR", format!("/run/user/{}", uid_of(user)))
-            .output();
-        if let Ok(o) = out {
-            if o.status.success() {
-                done.push(format!("--user {} disabled", name));
+        let out = if self_user.as_deref() == Some(user) {
+            Command::new("systemctl")
+                .args(["--user", "disable", "--now", name])
+                .env("XDG_RUNTIME_DIR", &runtime)
+                .output()
+        } else {
+            Command::new("sudo")
+                .args(["-n", "-u", user, "env", &format!("XDG_RUNTIME_DIR={}", runtime)])
+                .arg("systemctl")
+                .args(["--user", "disable", "--now", name])
+                .output()
+        };
+        match out {
+            Ok(o) if o.status.success() => done.push(format!("--user {} disabled ({})", name, user)),
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                if !err.trim().is_empty() {
+                    eprintln!("   (--user {} disable 失败: {})", name, err.trim());
+                }
             }
+            Err(_) => {}
         }
     }
     done
+}
+
+fn current_username() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .or_else(|| std::env::var("LOGNAME").ok())
+        .filter(|s| !s.is_empty())
 }
 
 fn uid_of(user: &str) -> u32 {
@@ -411,8 +462,12 @@ mod tests {
 
     #[test]
     fn cron_lines_are_single_line() {
+        // 客户端行也必须带 GNP_HOME: crontab 归 root 时 $HOME=/root, 不写死就找不到组件
         let c = client_cron_line(Path::new("/home/lwboy/.local/gnp"));
-        assert_eq!(c, "* * * * * /home/lwboy/.local/gnp/bin/tick.sh");
+        assert_eq!(
+            c,
+            "* * * * * GNP_HOME=/home/lwboy/.local/gnp /home/lwboy/.local/gnp/bin/tick.sh"
+        );
         // 服务端必须显式带 GNP_HOME (tick.sh 默认 $HOME/.local/gnp 对 /opt/gnp 是错的)
         let s = server_cron_line(Path::new("/opt/gnp"));
         assert_eq!(s, "* * * * * GNP_HOME=/opt/gnp /opt/gnp/bin/tick.sh");
@@ -430,6 +485,34 @@ mod tests {
         assert!(assert_rendered("ExecStart=/opt/gnp/bin/sing-box run").is_ok());
         let e = assert_rendered("ExecStart={{SB_BIN}} run").unwrap_err().to_string();
         assert!(e.contains("SB_BIN"), "{}", e);
+    }
+
+    #[test]
+    fn purge_keeps_new_tick_line() {
+        // 清旧发生在"装新之后" (install/migrate 收尾), 必须保住刚写的 tick 行
+        let base = std::path::Path::new("/home/lwboy/.local/gnp");
+        let lines = vec![
+            "42 */6 * * * /home/lwboy/.local/muster/bin/pull-certs.sh".to_string(),
+            "* * * * * /home/lwboy/.local/gnp/bin/tick.sh".to_string(),
+            "* * * * * /home/lwboy/.local/bin/gnp-client guard >> /tmp/g.log".to_string(),
+            "0 4 * * * /home/lwboy/.local/bin/gnp-client update-rules check".to_string(),
+        ];
+        let kept = purge_gnp_cron_lines_keep_tick(&lines, base);
+        assert!(
+            kept.iter().any(|l| l.contains("/home/lwboy/.local/gnp/bin/tick.sh")),
+            "新 tick 行必须保留, 实际 kept={:?}",
+            kept
+        );
+        assert!(
+            !kept.iter().any(|l| l.contains("gnp-client")),
+            "旧调度行必须剔除, 实际 kept={:?}",
+            kept
+        );
+        assert!(kept.iter().any(|l| l.contains("muster")), "用户其它 cron 不能动");
+        // 全量 purge (装新之前用) 则连 tick 一起删
+        assert!(!purge_gnp_cron_lines(&lines)
+            .iter()
+            .any(|l| l.contains("tick.sh")));
     }
 
     #[test]

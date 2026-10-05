@@ -16,37 +16,27 @@ aipro (docker sing-box client)  --hysteria2/QUIC(UDP 5766)-->  lwtop (sing-box s
 
 ## 部署步骤
 
+> ⚠️ 2026-10-05 起服务端已迁到 v2 布局（plan §4.3）：`/opt/gnp-quic` → `/opt/gnp`，
+> `gnp-hy2` → `gnps.service`，配置由 `config.toml` 渲染。**不要再手工写 unit/证书**，
+> 一条命令搞定（旧布局已归档在 `/opt/gnp/backups/gnp-quic-legacy`）。
+
 ### 1. lwtop (server)
 
 ```bash
-# 证书
-mkdir -p /opt/gnp-quic/certs
-openssl req -x509 -nodes -newkey rsa:2048 -keyout server.key -out server.crt \
-  -days 3650 -subj "/CN=gnp-quic"
+# 事实源: repo 的 deploy/hosts/lwtop-server.toml (8 个用户, 端口 5766, salamander obfs)
+scp deploy/hosts/lwtop-server.toml lwtop:/tmp/
+ssh lwtop 'sudo mkdir -p /opt/gnp/{bin,etc/tick.d,var,secrets,backups}
+           sudo install -m 600 /tmp/lwtop-server.toml /opt/gnp/config.toml
+           sudo /opt/gnp/bin/gnps install --config /opt/gnp/config.toml'
 
-# 配置 (见 lwtop-hy2-server.json)
-# systemd 服务
-cat > /etc/systemd/system/gnp-hy2.service << 'EOF'
-[Unit]
-Description=GNP Hysteria2 QUIC Server
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/lw/.local/share/sing-box/sing-box run -c /opt/gnp-quic/config.json
-Restart=always
-RestartSec=3
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl enable --now gnp-hy2
-
+# gnps install 会: 渲染 config.json → sing-box check → 写 gnps.service → 装 tick 调度
+#                 → enable --now gnps → disable 旧 gnp-hy2 → 归档 /opt/gnp-quic
 # ⚠️ 关键: 防火墙放行 UDP 5766 —— 必须走 ufw (持久化), 不要裸 iptables
-ufw allow 5766/udp comment 'gnp hy2 QUIC'
-ufw status | grep 5766
+ssh lwtop 'sudo ufw allow 5766/udp comment "gnp hy2 QUIC"; sudo ufw status | grep 5766'
 ```
+
+验证：`ssh lwtop 'sudo /opt/gnp/bin/gnps status'`（gnps active + UDP 5766 在听），
+客户端侧 `gnpc probe --skip-mtu` 走真实路径握手。
 
 ### 2. aipro (docker client)
 
@@ -78,3 +68,7 @@ curl -x http://127.0.0.1:1081 -s https://ifconfig.me  # 8.209.203.17 (lwtop 出�
    造出假的尺寸截止点）。**修复与铁律：hy2 端口一律 `ufw allow <port>/udp` 持久化；排查"无声超时"
    先查服务端防火墙协议+端口双栈放行，尺寸扫描结论必须过单调性校验**（`gnp-client probe` 已内置）。
    当日已迁 5766/udp（云安全组 + ufw 双侧放行），443/udp 两侧均已关闭。
+5. **服务端换进程后客户端长跑实例会僵死** —— 服务端迁到 `gnps` 后，Mac 侧
+   `clash_api` delay 仍报 113ms「健康」，真实流量却全丢（`status --brief` 的 `exit=-`）。
+   **服务端迁移/重启后必须逐台重启客户端 sing-box**（`gnpc stop && gnpc start`），
+   guard 看不见这种「假健康」。已记入 plan §7.3 #19。

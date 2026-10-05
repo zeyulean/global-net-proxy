@@ -25,15 +25,16 @@ pub const GNP_PORT: u16 = 5766;
 /// clash_api 默认端口 (switch/status/guard 依赖)
 pub const GNP_CLASH_API_PORT: u16 = 9090;
 
+/// `$GNP_HOME` 的原值 (未设置/为空则 None)
+pub fn gnp_home_from_env() -> Option<PathBuf> {
+    std::env::var_os("GNP_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
 /// 客户端部署根目录: `$GNP_HOME` || `~/.local/gnp`
 pub fn gnp_home() -> PathBuf {
-    if let Some(h) = std::env::var_os("GNP_HOME") {
-        let p = PathBuf::from(h);
-        if !p.as_os_str().is_empty() {
-            return p;
-        }
-    }
-    home_dir().join(".local/gnp")
+    gnp_home_from_env().unwrap_or_else(|| home_dir().join(".local/gnp"))
 }
 
 /// 服务端部署根目录: `$GNP_SERVER_HOME` || `/opt/gnp`
@@ -52,13 +53,23 @@ pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// "用户 home" —— GNP_HOME 显式指定时按它推导, 否则用 $HOME
+///
+/// sudo 跑 (`sudo GNP_HOME=/home/lwboy/.local/gnp gnpc ...`) 时 $HOME=/root,
+/// 但配置里的 `~/.ssh/id_ed25519` 指的是**目标用户**的家目录。
+/// 展开错了会让 sing-box check 直接 FATAL (aipro 实迁踩过)。
+pub fn user_home() -> PathBuf {
+    target_home().unwrap_or_else(home_dir)
+}
+
 /// 展开 `~` 前缀 (config.toml 里 ssh_key 允许写 `~/.ssh/id_ed25519`)
 pub fn expand_tilde(s: &str) -> PathBuf {
+    let home = user_home();
     if s == "~" {
-        return home_dir();
+        return home;
     }
     if let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")) {
-        return home_dir().join(rest);
+        return home.join(rest);
     }
     PathBuf::from(s)
 }
@@ -187,8 +198,34 @@ pub fn gnps_tick_d() -> PathBuf {
 // --- 旧布局 (migrate 探测用) ---
 
 /// v1 客户端数据目录 `~/.local/share/sing-box/` (migrate 的迁移源)
+///
+/// **GNP_HOME 显式指定时按同一 home 推导**, 而不是按当前进程的 `$HOME`:
+/// `sudo GNP_HOME=/home/lwboy/.local/gnp gnpc migrate` 时 $HOME=/root,
+/// 按 $HOME 找会跑到 /root/.local/share/sing-box (不存在) → 资产搬不过去。
 pub fn legacy_sb_dir() -> PathBuf {
+    if let Some(base) = gnp_home_from_env() {
+        // 标准布局 <home>/.local/gnp → 旧布局 <home>/.local/share/sing-box
+        if let Some(local) = base.parent() {
+            if local.file_name().and_then(|n| n.to_str()) == Some(".local") {
+                if let Some(home) = local.parent() {
+                    return home.join(".local/share/sing-box");
+                }
+            }
+        }
+        // 非标准布局: 就近找
+        return base.join("share/sing-box");
+    }
     home_dir().join(".local/share/sing-box")
+}
+
+/// GNP_HOME 指向的"用户 home" (即 <home>/.local 的上一级); 推不出来返回 None
+pub fn target_home() -> Option<PathBuf> {
+    let base = gnp_home_from_env()?;
+    let local = base.parent()?;
+    if local.file_name().and_then(|n| n.to_str()) == Some(".local") {
+        return local.parent().map(|h| h.to_path_buf());
+    }
+    None
 }
 
 /// v1 服务端目录 `/opt/gnp-quic/` (lwtop)

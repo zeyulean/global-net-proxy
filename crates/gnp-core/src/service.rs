@@ -49,18 +49,13 @@ pub fn install_linux() -> Result<()> {
 
 /// 同上, 但服务名与单元内容由调用方给 (服务端 gnps 复用)
 pub fn install_linux_named(name: &str, unit: &str) -> Result<()> {
-    let path = scheduler::systemd_unit_path(name);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建 systemd 目录失败: {} (需要 root)", parent.display()))?;
-    }
-    std::fs::write(&path, unit)
-        .with_context(|| format!("写入 systemd 单元失败: {} (需要 root)", path.display()))?;
-    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
-    let _ = Command::new("systemctl").args(["enable", name]).status();
-    println!("✅ Linux systemd 系统服务已安装: {}", path.display());
-    println!("   启动: sudo systemctl start {}", name);
-    println!("   状态: sudo systemctl status {}", name);
+    write_unit_privileged(name, unit)?;
+    let _ = systemctl_run(&["daemon-reload"]);
+    let _ = systemctl_run(&["enable", name]);
+    println!(
+        "✅ Linux systemd 系统服务已安装: {}",
+        scheduler::systemd_unit_path(name).display()
+    );
     Ok(())
 }
 
@@ -96,26 +91,96 @@ pub fn is_running(platform: Platform) -> Result<bool> {
 
 // --- systemd 通用 (客户端/服务端同名接口) ---
 
-/// `systemctl start <name>` (需 root 或已配好 sudo)
-pub fn start_named(name: &str) -> Result<()> {
-    let st = Command::new("systemctl")
-        .args(["start", name])
-        .status()
-        .with_context(|| format!("systemctl start {} 失败", name))?;
-    if !st.success() {
-        bail!("systemctl start {} 失败", name);
+/// 有免密 sudo 就用 sudo 跑 systemctl, 否则直接跑
+///
+/// 客户端的 crontab/tick 归**用户** (plan §1.4: 调度路径在 /home/<user>/.local/gnp),
+/// 但常驻服务是系统级 gnpc.service —— 写 unit 和 start 都要 root。
+/// 于是这里做成"能直连就直连, 直连不行借免密 sudo"; 两者都不行返回 None,
+/// 由调用方打印精确命令, 而不是整个迁移失败。
+fn systemctl_run(args: &[&str]) -> Option<std::process::ExitStatus> {
+    if let Ok(st) = Command::new("systemctl").args(args).status() {
+        if st.success() {
+            return Some(st);
+        }
     }
-    Ok(())
+    // 免密探测 (非交互; aipro 的 sudo 要密码 → 这里直接放弃, 走提示分支)
+    let ok = Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return None;
+    }
+    let mut full: Vec<&str> = vec!["systemctl"];
+    full.extend_from_slice(args);
+    Command::new("sudo").args(&full).status().ok()
+}
+
+/// `systemctl start <name>` (需 root 或免密 sudo)
+pub fn start_named(name: &str) -> Result<()> {
+    match systemctl_run(&["start", name]) {
+        Some(st) if st.success() => Ok(()),
+        _ => bail!("systemctl start {} 失败 (需要 root 或免密 sudo)", name),
+    }
 }
 
 pub fn stop_named(name: &str) -> Result<()> {
-    let _ = Command::new("systemctl").args(["stop", name]).status();
+    let _ = systemctl_run(&["stop", name]);
     Ok(())
 }
 
 pub fn enable_named(name: &str) -> Result<()> {
-    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
-    let _ = Command::new("systemctl").args(["enable", name]).status();
+    let _ = systemctl_run(&["daemon-reload"]);
+    let _ = systemctl_run(&["enable", name]);
+    Ok(())
+}
+
+/// 有没有 root/免密 sudo (决定要不要打印"请手动执行")
+pub fn has_privilege() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+        .map(|u| u == 0)
+        .unwrap_or(false)
+        || Command::new("sudo")
+            .args(["-n", "true"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+}
+
+/// 把 unit 内容写进 /etc/systemd/system/<name>.service (root 或免密 sudo)
+pub fn write_unit_privileged(name: &str, unit: &str) -> Result<()> {
+    let path = crate::scheduler::systemd_unit_path(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if std::fs::write(&path, unit).is_ok() {
+        return Ok(());
+    }
+    use std::io::Write;
+    let mut child = Command::new("sudo")
+        .arg("tee")
+        .arg(&path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("sudo tee 启动失败 (需要免密 sudo)")?;
+    if let Some(mut sin) = child.stdin.take() {
+        let _ = sin.write_all(unit.as_bytes());
+    }
+    let st = child.wait().context("sudo tee 等待失败")?;
+    if !st.success() {
+        bail!("写 {} 失败 (需要 root 或免密 sudo)", path.display());
+    }
     Ok(())
 }
 

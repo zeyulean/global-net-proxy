@@ -130,7 +130,7 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
     //   → 失败就把旧 plist 装回去 → 成功才清残留/归档旧目录
     println!("\n[4/6] 调度 + 服务接线 (先让位端口, 后拆旧)");
     install_sched::install_with(false)?;
-    let stopped = install_sched::stop_legacy_singbox();
+    let stopped = install_sched::stop_legacy_services();
     for s in &stopped {
         println!("   - {}", s);
     }
@@ -419,17 +419,18 @@ fn verify_new_service() -> bool {
     let Ok(p) = platform::ensure_supported() else {
         return false;
     };
-    // 1) 进程
+    // 1) **新**服务自己必须在跑 (不能只看"有进程在跑" —— 旧服务没停干净时会误判)
+    let _ = p;
     let mut running = false;
     for _ in 0..20 {
-        if gnp_core::service::is_running(p).unwrap_or(false) {
+        if install_sched::new_service_running() {
             running = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     if !running {
-        println!("      · 进程没起来");
+        println!("      · 新服务 (com.gnpc.singbox / gnpc.service) 没起来");
         return false;
     }
     // 2) 端口 (mixed 1080)
@@ -458,8 +459,28 @@ fn verify_new_service() -> bool {
     }
 }
 
-/// 回滚: 把旧 launchd 常驻原样装回 (旧目录/旧 plist 此刻都还在)
+/// 回滚: 把旧常驻服务原样装回 (旧目录/旧单元此刻都还在)
 fn rollback_legacy() {
+    // Linux: 旧 systemd 单元重新 enable+start
+    if gnp_core::platform::Platform::detect() == gnp_core::platform::Platform::Linux {
+        for name in gnp_core::scheduler::LEGACY_SYSTEMD {
+            let unit = gnp_core::scheduler::systemd_unit_path(name);
+            let renamed = unit.with_extension("service.disabled");
+            if !unit.exists() && renamed.exists() {
+                let _ = std::fs::rename(&renamed, &unit);
+            }
+            if unit.exists() {
+                let _ = gnp_core::service::enable_named(name);
+                let _ = gnp_core::service::start_named(name);
+                if gnp_core::tunnel::service_active_named(name) {
+                    println!("   - 已装回旧服务 {}", name);
+                }
+            }
+        }
+        // 停掉没起来的新服务, 免得两个抢 1080
+        let _ = gnp_core::service::stop_named(gnp_core::scheduler::SYSTEMD_CLIENT);
+        return;
+    }
     println!("↩︎  回滚: 装回旧服务 {}", gnp_core::scheduler::LEGACY_LAUNCHD.join(", "));
     for label in gnp_core::scheduler::LEGACY_LAUNCHD {
         let plist = gnp_core::scheduler::launchd_plist_path(label);

@@ -80,9 +80,28 @@ pub fn load_now() -> Result<()> {
         Platform::MacOs => load_plists(),
         Platform::Linux => {
             write_cron(&base)?;
-            // 系统级 gnpc.service (需 root; 无权限时 install_linux 会打印命令)
-            gnp_core::service::install_linux()?;
-            let _ = gnp_core::service::start_named(scheduler::SYSTEMD_CLIENT);
+            // 系统级 gnpc.service: 直连写, 不行借免密 sudo; 都没有就打印精确命令
+            // 但**不中断** —— tick 调度已经装好, 单元可以后补 (migrate 会再验一次)
+            match gnp_core::service::install_linux() {
+                Ok(()) => {
+                    let _ = gnp_core::service::start_named(scheduler::SYSTEMD_CLIENT);
+                }
+                Err(e) => {
+                    let unit = scheduler::client_unit(&base)?;
+                    let upath = scheduler::systemd_unit_path(scheduler::SYSTEMD_CLIENT);
+                    println!("⚠️  写 systemd 单元失败: {}", e);
+                    println!("   手动执行 (需 root):");
+                    println!("     sudo tee {} >/dev/null <<'EOF'", upath.display());
+                    for line in unit.lines() {
+                        println!("     {}", line);
+                    }
+                    println!("     EOF");
+                    println!(
+                        "     sudo systemctl daemon-reload && sudo systemctl enable {}",
+                        scheduler::SYSTEMD_CLIENT
+                    );
+                }
+            }
             Ok(())
         }
         _ => Ok(()),
@@ -198,7 +217,54 @@ fn install_macos(base: &Path) -> Result<()> {
     load_plists()
 }
 
-/// 只停旧 launchd 常驻 (保留 plist 文件 → 可回滚); migrate 在让位端口时用
+/// 停旧常驻服务 (跨平台; 保留旧单元/plist → 可回滚)
+///
+/// migrate 在装载新服务前调用: 同机同端口, 旧的不让位新的必 crash-loop。
+/// macOS → 旧 launchd 标签; Linux → 旧 systemd 单元 (gnp-proxy / gnp-hy2 / --user sing-box)。
+pub fn stop_legacy_services() -> Vec<String> {
+    match Platform::detect() {
+        Platform::MacOs => stop_legacy_singbox(),
+        Platform::Linux => {
+            let mut done = Vec::new();
+            for name in scheduler::LEGACY_SYSTEMD {
+                let was = gnp_core::tunnel::service_active_named(name);
+                if !was {
+                    continue;
+                }
+                let _ = gnp_core::service::stop_named(name);
+                // 单元文件留着 (purge_legacy 才改名), verify 失败要能原样起回
+                done.push(format!("systemd {} 已停 (unit 保留待回滚)", name));
+            }
+            if let Some(user) = current_user() {
+                for line in scheduler::disable_legacy_systemd_user(&user) {
+                    done.push(line);
+                }
+            }
+            if !done.is_empty() {
+                // 兜底: 杀掉残留进程, 否则它还占着 1080
+                let _ = Command::new("pkill").args(["-f", "sing-box run"]).status();
+            }
+            done
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// 严格问"新服务自己在不在跑" (macOS: launchctl 有 com.gnpc.singbox; Linux: gnpc active)
+pub fn new_service_running() -> bool {
+    match Platform::detect() {
+        Platform::MacOs => Command::new("launchctl")
+            .args(["list"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(scheduler::LAUNCHD_SINGBOX))
+            .unwrap_or(false),
+        Platform::Linux => gnp_core::tunnel::service_active_named(scheduler::SYSTEMD_CLIENT),
+        Platform::Windows => true,
+        _ => false,
+    }
+}
+
+/// 只停旧 launchd 常驻 (保留 plist 文件 → 可回滚); macOS 专用
 pub fn stop_legacy_singbox() -> Vec<String> {
     let mut done = Vec::new();
     for label in scheduler::LEGACY_LAUNCHD {
@@ -313,11 +379,13 @@ pub fn purge_legacy() -> Vec<String> {
         Platform::MacOs => done.extend(scheduler::remove_legacy_launchd()),
         Platform::Linux => {
             let lines = scheduler::read_crontab();
-            let kept = scheduler::purge_gnp_cron_lines(&lines);
+            // 保留当前 base 的 tick 行 —— 清旧发生在装新之后 (install/migrate 收尾),
+            // 用全量 purge 会把刚装好的 tick 一起删掉 (lwmate 实迁踩过)
+            let kept = scheduler::purge_gnp_cron_lines_keep_tick(&lines, &platform::gnp_home());
             if kept.len() != lines.len() {
                 if scheduler::write_crontab(&kept).is_ok() {
                     done.push(format!(
-                        "crontab 剔除旧 gnp 行 {} 条",
+                        "crontab 剔除旧 gnp 行 {} 条 (新 tick 行已保留)",
                         lines.len() - kept.len()
                     ));
                 }
@@ -333,9 +401,42 @@ pub fn purge_legacy() -> Vec<String> {
     done
 }
 
+/// 目标机器上的"登录用户" —— 优先按 GNP_HOME 所属 home 的属主判定
+///
+/// `sudo ... gnpc migrate` 时 $USER=root, 但 aipro 的旧 `--user sing-box`
+/// 属于 lwboy; 用 $USER 会去禁 root 的用户单元 (不存在), 真正的旧服务还在跑。
 fn current_user() -> Option<String> {
+    if let Some(home) = platform::target_home() {
+        if let Some(name) = dir_owner_name(&home) {
+            return Some(name);
+        }
+    }
     std::env::var("USER")
         .ok()
         .or_else(|| std::env::var("LOGNAME").ok())
         .filter(|s| !s.is_empty())
+}
+
+/// 目录属主的用户名 (uid → id -un)
+fn dir_owner_name(dir: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let uid = std::fs::metadata(dir).ok()?.uid();
+        if uid == 0 {
+            return None; // root 拥有的目录不是我们要找的登录用户 home
+        }
+        let out = Command::new("id").args(["-un", &uid.to_string()]).output().ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
 }
