@@ -1,0 +1,5 @@
+# gnp 统一调度 — 唯一调度入口 (每分钟一次 tick.sh)
+# 组件缺席=静默跳过(设计行为); 组件失败=落 var/tick.log WARN(不允许无声)。
+# 客户端: * * * * * ~/.local/gnp/bin/tick.sh
+# 服务端: * * * * * GNP_HOME=/opt/gnp /opt/gnp/bin/tick.sh   (tick.sh 默认按 $HOME 找 BASE, 服务端必须显式给)
+{{CRON_CMD}}

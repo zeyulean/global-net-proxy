@@ -65,7 +65,7 @@ pub fn test_proxy(proxy: &str, url: &str, timeout_s: u64) -> Result<(String, u64
 /// **只认 systemd**: pgrep 兜底会误判 —— 客户端 sing-box 也在跑, 会让
 /// "服务端活着" 显示成 ✅ (Mac 上尤其明显)。服务端判定必须看服务状态。
 pub fn hy2_server_active() -> bool {
-    for name in ["gnps", "gnp-hy2"] {
+    for name in [crate::scheduler::SYSTEMD_SERVER, "gnp-hy2"] {
         if let Ok(out) = Command::new("systemctl").args(["is-active", name]).output() {
             if String::from_utf8_lossy(&out.stdout).trim() == "active" {
                 return true;
@@ -77,7 +77,7 @@ pub fn hy2_server_active() -> bool {
 
 /// 运行 `systemctl status <name>` 获取原始输出 (server 端)
 pub fn hy2_status_raw() -> Result<String> {
-    let name = "gnps";
+    let name = crate::scheduler::SYSTEMD_SERVER;
     let out = Command::new("systemctl")
         .args(["status", name, "--no-pager", "-l"])
         .output()

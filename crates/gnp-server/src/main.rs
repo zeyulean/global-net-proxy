@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gnp_core::platform;
+use gnp_core::scheduler;
 use gnp_core::settings::{ServerSettings, ServerUser};
 use gnp_core::tunnel;
 
@@ -26,7 +27,7 @@ const SERVER_IP: &str = "8.209.203.17";
 /// hy2 默认端口 5766 (GNP_PORT, 可在 `[server].hy2_port` 覆盖; 改动需 ufw + 云安全组双侧)。
 #[derive(Parser)]
 #[command(
-    name = "gnps",
+    name = scheduler::SYSTEMD_SERVER,
     version,
     about = "global-net-proxy server (Hysteria2/QUIC)",
     long_about = "管理 sing-box hysteria2 inbound。需要 root 权限。\n\
@@ -178,7 +179,7 @@ fn pending_dir() -> PathBuf {
     home().join("pending-users")
 }
 fn unit_path() -> PathBuf {
-    PathBuf::from("/etc/systemd/system/gnps.service")
+    scheduler::systemd_unit_path(scheduler::SYSTEMD_SERVER)
 }
 
 /// 检查是否 root
@@ -382,9 +383,7 @@ fn gen_cert() -> Result<()> {
 /// gnps.service (资产来自 deploy/scheduler/gnps.service)
 fn write_unit() -> Result<()> {
     let base = home();
-    let mut unit = include_str!("../../../deploy/scheduler/gnps.service").to_string();
-    unit = unit.replace("{{SB_BIN}}", &base.join("bin/sing-box").display().to_string());
-    unit = unit.replace("{{CONFIG}}", &base.join("config.json").display().to_string());
+    let unit = scheduler::server_unit(&base)?;
     let path = unit_path();
     std::fs::write(&path, unit).with_context(|| format!("写 systemd 单元失败: {}", path.display()))?;
     println!("✅ systemd 单元: {}", path.display());
@@ -414,17 +413,17 @@ fn cmd_install(config: Option<&str>) -> Result<()> {
     // 启动: 新服务先起, 验证后再 disable 旧 gnp-hy2
     println!("🚀 启动 gnps...");
     let _ = Command::new("systemctl").args(["daemon-reload"]).status();
-    let _ = Command::new("systemctl").args(["enable", "gnps"]).status();
-    let _ = Command::new("systemctl").args(["restart", "gnps"]).status();
+    let _ = Command::new("systemctl").args(["enable", scheduler::SYSTEMD_SERVER]).status();
+    let _ = Command::new("systemctl").args(["restart", scheduler::SYSTEMD_SERVER]).status();
     std::thread::sleep(std::time::Duration::from_secs(1));
     if tunnel::hy2_server_active() && tunnel::hy2_port_listening(s.server.hy2_port) {
         println!("✅ gnps active, UDP {} 监听中", s.server.hy2_port);
     } else {
-        bail!("gnps 未正常起来 (systemctl status {} 看日志); 旧 gnp-hy2 未拆, 可回退", "gnps");
+        bail!("gnps 未正常起来 (systemctl status {} 看日志); 旧 gnp-hy2 未拆, 可回退", scheduler::SYSTEMD_SERVER);
     }
 
     println!("\n✅ 部署完成!");
-    println!("   服务: {} (systemd)", "gnps");
+    println!("   服务: {} (systemd)", scheduler::SYSTEMD_SERVER);
     println!("   端口: {}/udp  (ufw + 云安全组都要放行)", s.server.hy2_port);
     println!("   配置: {}", toml_path().display());
     println!("   证书: {}", cert_crt().display());
@@ -435,7 +434,7 @@ fn cmd_install(config: Option<&str>) -> Result<()> {
 fn cmd_uninstall() -> Result<()> {
     check_root()?;
     println!("== 卸载 gnp server (保留数据) ==");
-    let name = "gnps";
+    let name = scheduler::SYSTEMD_SERVER;
     let _ = Command::new("systemctl").args(["stop", name]).status();
     let _ = Command::new("systemctl").args(["disable", name]).status();
     let _ = std::fs::remove_file(unit_path());
@@ -503,8 +502,8 @@ fn add_user_and_apply(name: Option<&str>, password: &str) -> Result<ServerSettin
     s.validate()?;
     s.save(&path)?;
     write_config(&s)?;
-    let _ = Command::new("systemctl").args(["restart", "gnps"]).status();
-    println!("✅ 已写入 {} 并重启 {}", path.display(), "gnps");
+    let _ = Command::new("systemctl").args(["restart", scheduler::SYSTEMD_SERVER]).status();
+    println!("✅ 已写入 {} 并重启 {}", path.display(), scheduler::SYSTEMD_SERVER);
     Ok(s)
 }
 

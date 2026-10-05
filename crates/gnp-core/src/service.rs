@@ -6,20 +6,19 @@
 //! 好处: 开机自启、崩溃自动重启 (KeepAlive/Restart=on-failure)、系统级管理。
 
 use crate::platform::{gnp_bin_dir, gnp_config_json, gnp_sb_bin, Platform};
+use crate::scheduler;
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
 /// launchd plist 标签 (macOS 常驻 sing-box)
-pub const LAUNCHD_LABEL: &str = "com.gnpc.singbox";
+pub const LAUNCHD_LABEL: &str = scheduler::LAUNCHD_SINGBOX;
 /// systemd service 名称 (Linux 客户端)
-pub const SYSTEMD_SERVICE: &str = "gnpc";
+pub const SYSTEMD_SERVICE: &str = scheduler::SYSTEMD_CLIENT;
 
 /// 获取 launchd plist 路径
 pub fn launchd_plist() -> PathBuf {
-    crate::platform::home_dir()
-        .join("Library/LaunchAgents")
-        .join(format!("{}.plist", LAUNCHD_LABEL))
+    scheduler::launchd_plist_path(scheduler::LAUNCHD_SINGBOX)
 }
 
 /// 生成 launchd plist 内容 (macOS 开机自启)
@@ -27,35 +26,18 @@ pub fn launchd_plist() -> PathBuf {
 /// 资产在 `deploy/scheduler/com.gnpc.singbox.plist`, 由 gnpc `include_str!` 嵌入。
 pub fn launchd_plist_content() -> Result<String> {
     let base = crate::platform::gnp_home();
-    let tpl = include_str!("../../../deploy/scheduler/com.gnpc.singbox.plist");
-    let vars: Vec<(&str, String)> = vec![
-        ("SB_BIN", base.join("bin/sing-box").display().to_string()),
-        ("CONFIG", base.join("config.json").display().to_string()),
-        ("SB_LOG", base.join("var/sing-box.log").display().to_string()),
-        ("SB_ERR", base.join("var/sing-box.err").display().to_string()),
-        ("TICK_SH", base.join("bin/tick.sh").display().to_string()),
-        ("TICK_LAUNCHD_LOG", base.join("var/tick-launchd.log").display().to_string()),
-    ];
-    let mut out = tpl.to_string();
-    for (k, v) in &vars {
-        out = out.replace(&format!("{{{{{}}}}}", k), v);
-    }
-    Ok(out)
+    scheduler::client_plist_singbox(&base)
 }
 
 /// 生成 systemd 单元内容 (Linux 客户端, 系统级)
 pub fn systemd_unit_content() -> Result<String> {
     let base = crate::platform::gnp_home();
-    let tpl = include_str!("../../../deploy/scheduler/gnpc.service");
-    let mut out = tpl.to_string();
-    out = out.replace("{{SB_BIN}}", &base.join("bin/sing-box").display().to_string());
-    out = out.replace("{{CONFIG}}", &base.join("config.json").display().to_string());
-    Ok(out)
+    scheduler::client_unit(&base)
 }
 
 /// Linux systemd 系统级服务单元路径 (/etc/systemd/system/gnpc.service)
 pub fn systemd_system_unit_path() -> PathBuf {
-    PathBuf::from("/etc/systemd/system").join(format!("{}.service", SYSTEMD_SERVICE))
+    scheduler::systemd_unit_path(scheduler::SYSTEMD_CLIENT)
 }
 
 /// 安装 Linux systemd 系统服务: 写 unit 文件 + daemon-reload + enable
@@ -67,7 +49,7 @@ pub fn install_linux() -> Result<()> {
 
 /// 同上, 但服务名与单元内容由调用方给 (服务端 gnps 复用)
 pub fn install_linux_named(name: &str, unit: &str) -> Result<()> {
-    let path = PathBuf::from("/etc/systemd/system").join(format!("{}.service", name));
+    let path = scheduler::systemd_unit_path(name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("创建 systemd 目录失败: {} (需要 root)", parent.display()))?;
@@ -213,7 +195,7 @@ fn is_running_linux() -> Result<bool> {
 // --- Windows (schtasks 计划任务 + taskkill/tasklist) ---
 
 /// 计划任务名 (开机自启; 与 Linux 服务同名 `gnpc`)
-const WIN_TASK: &str = "gnpc";
+const WIN_TASK: &str = scheduler::WIN_TASK;
 
 /// 计划任务是否存在
 fn win_task_exists() -> bool {

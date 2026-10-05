@@ -11,6 +11,7 @@ pub mod config;
 pub mod install;
 pub mod platform;
 pub mod proxy;
+pub mod scheduler;
 pub mod service;
 pub mod settings;
 pub mod tunnel;

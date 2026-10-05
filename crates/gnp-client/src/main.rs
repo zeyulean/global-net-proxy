@@ -11,6 +11,8 @@ use std::io::IsTerminal;
 mod api;
 mod cleanup;
 mod guard;
+mod install_sched;
+mod migrate;
 mod probe;
 mod recover;
 mod register;
@@ -52,10 +54,12 @@ use gnp_core::{config, install, platform, proxy, service, settings, tunnel};
         \n\
         常用命令:\n\
         \n  \
+        gnpc install-scheduler  装调度 (tick.sh + launchd/crontab) 并清旧\n  \
         gnpc start              启动代理\n  \
         gnpc stop               停止代理\n  \
         gnpc status             查看状态 (进程/端口/通道/出口IP)\n  \
         gnpc status --brief     一行摘要 (tick.sh/容器唯一数据接口)\n  \
+        gnpc migrate            旧布局 → 新布局 一键迁移\n  \
         gnpc probe              诊断: hy2 握手 + MTU 扫描\n  \
         gnpc switch ssh         强制 TCP 兜底 (auto 恢复自动)\n  \
         gnpc guard              跑一次看门狗 (调度内部调用)\n  \
@@ -144,6 +148,40 @@ enum Commands {
         force: bool,
     },
 
+    /// 从旧布局一键迁移到新布局
+    #[command(name = "migrate", long_about = "把 ~/.local/share/sing-box (v1) 迁到 ~/.local/gnp (v2), 一条命令搞定。\n\n\
+        步骤 (§4.2): 取事实源 → 搬资产 → 生成 config.json (sing-box check 必须过)\n\
+        → 装调度 (**新服务先起并验证, 再拆旧的**) → 旧目录挪 backups/legacy-singbox\n\
+        → 输出验证清单。任一步失败: 停在新半边, 旧服务保持原样。\n\n\
+        事实源优先级: --config <host toml> > 已有 $GNP_HOME/config.toml > 解析旧 config.json\n\
+        (已有 config.toml 直接用 → 与 deploy/hosts/<host>.toml md5 一致)\n\n\
+        示例:\n  \
+        gnpc migrate\n  \
+        gnpc migrate --config deploy/hosts/mac.toml\n  \
+        gnpc migrate --dry-run")]
+    Migrate {
+        /// host toml (deploy/hosts/&lt;host&gt;.toml) — 给了就跳过旧配置解析
+        #[arg(long)]
+        config: Option<String>,
+        /// 只报告将要做什么
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// 装/卸调度 (tick.sh + launchd/crontab, 并清旧)
+    #[command(long_about = "调度唯一入口 = tick.sh, 每分钟一次 (Mac launchd com.gnpc.tick /\n\
+        Linux crontab 一行 / 服务端 GNP_HOME=/opt/gnp)。幂等, 可重复跑。\n\n\
+        同时清理旧调度: com.gnp.* (unload + 移走)、旧 cron 行剔除、\n\
+        gnp-proxy / gnp-hy2 (--user sing-box) disable —— §7.1 验收 2/4 要求“无残留”。\n\n\
+        uninstall-scheduler 只拆调度, 不停常驻 sing-box (那是 `gnpc stop`)。\n\n\
+        示例:\n  \
+        gnpc install-scheduler\n  \
+        gnpc uninstall-scheduler")]
+    InstallScheduler {
+        /// 拆掉调度 (保留配置与日志)
+        #[arg(long)]
+        uninstall: bool,
+    },
     /// 查看/校验配置
     #[command(long_about = "查看 sing-box 配置文件内容, 或校验配置是否安全。\n\n\
         校验项:\n  \
@@ -416,6 +454,17 @@ fn main() -> Result<()> {
             out,
             force,
         ),
+        Commands::Migrate { config, dry_run } => migrate::run(&migrate::MigrateArgs {
+            config,
+            dry_run,
+        }),
+        Commands::InstallScheduler { uninstall } => {
+            if uninstall {
+                install_sched::uninstall()
+            } else {
+                install_sched::install()
+            }
+        }
         Commands::Config { show, check } => cmd_config(show, check),
         Commands::Tunnel => cmd_tunnel(),
         Commands::Test => cmd_test(),
@@ -573,7 +622,7 @@ fn cmd_install(config: &Option<String>, bin_only: bool) -> Result<()> {
     platform::ensure_layout(&platform::gnp_home()).context("创建部署目录失败")?;
 
     // 0. gnpc 自身入 bin/ —— tick.sh 的内核组件是 $BASE/bin/gnpc, 缺席就静默不跑
-    ensure_self_installed();
+    crate::migrate::ensure_self_installed();
 
     // 1. sing-box 二进制
     if !platform::sb_exists() {
@@ -651,7 +700,7 @@ fn cmd_init(
         .or_else(|| {
             let old = platform::legacy_sb_dir().join("config.json");
             if old.exists() {
-                settings_from_legacy(&old).ok()
+                crate::migrate::settings_from_legacy(&old).ok()
             } else {
                 None
             }
@@ -1119,82 +1168,4 @@ fn check_port(port: u16) -> bool {
 /// 简单出口检测
 fn test_proxy_simple() -> Result<(String, u64)> {
     tunnel::detect_exit_ip("socks5h://127.0.0.1:1080", 8)
-}
-// --- 迁移辅助 (阶段 ② 会归位到 migrate 模块) ---
-
-/// 把 gnpc 自身放进 `$GNP_HOME/bin/` —— tick.sh 的内核组件缺席就静默不跑
-fn ensure_self_installed() {
-    let Ok(self_exe) = std::env::current_exe() else { return };
-    let dest = platform::gnp_client_bin();
-    let same = self_exe
-        .canonicalize()
-        .ok()
-        .zip(dest.canonicalize().ok())
-        .map(|(a, b)| a == b)
-        .unwrap_or(false);
-    if same {
-        return;
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    if std::fs::copy(&self_exe, &dest).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).ok();
-        }
-        println!("✅ gnpc: {}", dest.display());
-    }
-}
-
-/// 旧 config.json → ClientSettings (只取 gnp 关心的字段)
-fn settings_from_legacy(cfg: &std::path::Path) -> Result<ClientSettings> {
-    use anyhow::Context as _;
-    let v = config::load(cfg)?;
-    let hy2 = config::extract_hy2_endpoint(&v)
-        .context("旧 config.json 里没有 hysteria2 outbound")?;
-    if hy2.server.is_empty() {
-        anyhow::bail!("旧 config.json 的 hy2 outbound 缺 server");
-    }
-    let listen = v
-        .get("inbounds")
-        .and_then(|x| x.as_array())
-        .and_then(|arr| arr.iter().find(|i| i.get("type").and_then(|t| t.as_str()) == Some("mixed")))
-        .and_then(|i| i.get("listen"))
-        .and_then(|l| l.as_str())
-        .unwrap_or("0.0.0.0")
-        .to_string();
-    let mut hosts = std::collections::BTreeMap::new();
-    if let Some(pre) = v
-        .get("dns")
-        .and_then(|d| d.get("servers"))
-        .and_then(|s| s.as_array())
-        .and_then(|arr| arr.iter().find(|s| s.get("tag").and_then(|t| t.as_str()) == Some("dns-hosts")))
-        .and_then(|s| s.get("predefined"))
-        .and_then(|p| p.as_object())
-    {
-        for (k, val) in pre {
-            if let Some(ip) = val.as_str() {
-                hosts.insert(k.clone(), ip.to_string());
-            }
-        }
-    }
-    let (ssh_user, ssh_key, ssh_port) = match config::find_outbound(&v, "ssh") {
-        Some(ssh) => (
-            ssh.get("user").and_then(|u| u.as_str()).unwrap_or("lw").to_string(),
-            ssh.get("private_key_path").and_then(|p| p.as_str()).unwrap_or("~/.ssh/id_ed25519").to_string(),
-            ssh.get("server_port").and_then(|p| p.as_u64()).unwrap_or(22) as u16,
-        ),
-        None => ("lw".to_string(), "~/.ssh/id_ed25519".to_string(), 22),
-    };
-    let clash_port = config::clash_api_addr(&v)
-        .and_then(|a| a.rsplit(':').next().and_then(|p| p.parse().ok()))
-        .unwrap_or(platform::GNP_CLASH_API_PORT);
-    Ok(ClientSettings {
-        server: ClientServer { host: hy2.server, hy2_port: hy2.server_port, ssh_port, ssh_user, ssh_key },
-        auth: ClientAuth { hy2_password: hy2.password, obfs_password: hy2.obfs_password.unwrap_or_default() },
-        client: ClientLocal { listen, clash_api_port: clash_port, hosts },
-        guard: GuardSettings::default(),
-    })
 }

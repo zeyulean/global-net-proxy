@@ -17,7 +17,7 @@ use std::process::Command;
 pub fn run() -> Result<()> {
     println!("=== [1/6] 立即停止 sing-box 服务 ===");
     // 新名 + 旧名都要停 (旧名 gnp-proxy 可能在迁移前就装着)
-    for unit in ["gnpc", "gnp-proxy", "gnp-hy2"] {
+    for unit in [gnp_core::scheduler::SYSTEMD_CLIENT, "gnp-proxy", "gnp-hy2"] {
         let _ = Command::new("systemctl").args(["stop", unit]).status();
     }
     let _ = Command::new("systemctl").args(["stop", "sing-box-gnp"]).status();
@@ -41,7 +41,7 @@ pub fn run() -> Result<()> {
     }
 
     println!("=== [2/6] 禁用开机自启 ===");
-    for unit in ["gnpc", "gnp-proxy", "gnp-hy2"] {
+    for unit in [gnp_core::scheduler::SYSTEMD_CLIENT, "gnp-proxy", "gnp-hy2"] {
         let _ = Command::new("systemctl").args(["disable", unit]).status();
     }
     let _ = Command::new("systemctl").args(["disable", "sing-box-gnp"]).status();
