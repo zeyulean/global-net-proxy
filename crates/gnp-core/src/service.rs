@@ -1,90 +1,59 @@
-//! 进程 / 服务管理 — 跨平台 (Mac launchctl / Linux systemd)
+//! 进程 / 服务管理 — 跨平台 (Mac launchd / Linux systemd / Windows schtasks)
 //!
-//! 核心思路: 用系统服务管理器管理 sing-box, 而不是裸 spawn 子进程。
-//! - macOS: launchctl load/unload ~/Library/LaunchAgents/com.gnp.sing-box.plist
-//! - Linux: systemctl start/stop gnp-proxy.service
+//! v2 命名 (plan §1.1): 常驻 sing-box = `com.gnpc.singbox` / `gnpc.service` / 计划任务 `gnpc`。
+//! 调度 (tick.sh) 是**另一件事**, 见 [`crate::scheduler`]; 本模块只管常驻本体。
 //!
 //! 好处: 开机自启、崩溃自动重启 (KeepAlive/Restart=on-failure)、系统级管理。
 
-use crate::platform::{sb_bin, sb_config, sb_dir, Platform};
+use crate::platform::{gnp_bin_dir, gnp_config_json, gnp_sb_bin, Platform};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// launchd plist 标签 (macOS)
-pub const LAUNCHD_LABEL: &str = "com.gnp.sing-box";
-/// systemd service 名称 (Linux)
-pub const SYSTEMD_SERVICE: &str = "gnp-proxy";
+/// launchd plist 标签 (macOS 常驻 sing-box)
+pub const LAUNCHD_LABEL: &str = "com.gnpc.singbox";
+/// systemd service 名称 (Linux 客户端)
+pub const SYSTEMD_SERVICE: &str = "gnpc";
 
 /// 获取 launchd plist 路径
 pub fn launchd_plist() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join("Library/LaunchAgents/com.gnp.sing-box.plist")
+    crate::platform::home_dir()
+        .join("Library/LaunchAgents")
+        .join(format!("{}.plist", LAUNCHD_LABEL))
 }
 
 /// 生成 launchd plist 内容 (macOS 开机自启)
-pub fn launchd_plist_content() -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{bin}</string>
-        <string>run</string>
-        <string>-c</string>
-        <string>{conf}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/sing-box-gnp.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/sing-box-gnp.err</string>
-</dict>
-</plist>
-"#,
-        label = LAUNCHD_LABEL,
-        bin = sb_bin().display(),
-        conf = sb_config().display(),
-    )
+///
+/// 资产在 `deploy/scheduler/com.gnpc.singbox.plist`, 由 gnpc `include_str!` 嵌入。
+pub fn launchd_plist_content() -> Result<String> {
+    let base = crate::platform::gnp_home();
+    let tpl = include_str!("../../../deploy/scheduler/com.gnpc.singbox.plist");
+    let vars: Vec<(&str, String)> = vec![
+        ("SB_BIN", base.join("bin/sing-box").display().to_string()),
+        ("CONFIG", base.join("config.json").display().to_string()),
+        ("SB_LOG", base.join("var/sing-box.log").display().to_string()),
+        ("SB_ERR", base.join("var/sing-box.err").display().to_string()),
+        ("TICK_SH", base.join("bin/tick.sh").display().to_string()),
+        ("TICK_LAUNCHD_LOG", base.join("var/tick-launchd.log").display().to_string()),
+    ];
+    let mut out = tpl.to_string();
+    for (k, v) in &vars {
+        out = out.replace(&format!("{{{{{}}}}}", k), v);
+    }
+    Ok(out)
 }
 
-/// 生成 systemd 单元内容 (Linux 开机自启, 系统级)
-///
-/// 使用系统级 systemd (/etc/systemd/system/), 需 root 安装但更可靠。
-pub fn systemd_unit_content() -> String {
-    format!(
-        r#"[Unit]
-Description=GNP Proxy (mixed only, no tun)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart={bin} run -c {conf}
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-"#,
-        bin = sb_bin().display(),
-        conf = sb_config().display(),
-    )
+/// 生成 systemd 单元内容 (Linux 客户端, 系统级)
+pub fn systemd_unit_content() -> Result<String> {
+    let base = crate::platform::gnp_home();
+    let tpl = include_str!("../../../deploy/scheduler/gnpc.service");
+    let mut out = tpl.to_string();
+    out = out.replace("{{SB_BIN}}", &base.join("bin/sing-box").display().to_string());
+    out = out.replace("{{CONFIG}}", &base.join("config.json").display().to_string());
+    Ok(out)
 }
 
-/// Linux systemd 系统级服务单元路径 (/etc/systemd/system/gnp-proxy.service)
-///
-/// 用系统级 (systemctl, 不加 --user), 更可靠。
-/// install 时需要 root (写 /etc/systemd/system/), 但 start/stop 用 pkexec/sudo 或 root。
+/// Linux systemd 系统级服务单元路径 (/etc/systemd/system/gnpc.service)
 pub fn systemd_system_unit_path() -> PathBuf {
     PathBuf::from("/etc/systemd/system").join(format!("{}.service", SYSTEMD_SERVICE))
 }
@@ -93,29 +62,23 @@ pub fn systemd_system_unit_path() -> PathBuf {
 ///
 /// 需要 root 权限 (写 /etc/systemd/system/)。
 pub fn install_linux() -> Result<()> {
-    let path = systemd_system_unit_path();
+    install_linux_named(SYSTEMD_SERVICE, &systemd_unit_content()?)
+}
+
+/// 同上, 但服务名与单元内容由调用方给 (服务端 gnps 复用)
+pub fn install_linux_named(name: &str, unit: &str) -> Result<()> {
+    let path = PathBuf::from("/etc/systemd/system").join(format!("{}.service", name));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("创建 systemd 目录失败: {} (需要 root)", parent.display()))?;
     }
-    std::fs::write(&path, systemd_unit_content())
+    std::fs::write(&path, unit)
         .with_context(|| format!("写入 systemd 单元失败: {} (需要 root)", path.display()))?;
-
-    // 重新加载 systemd 守护进程
-    let _ = Command::new("systemctl")
-        .args(["daemon-reload"])
-        .status();
-    // 设为开机自启
-    let _ = Command::new("systemctl")
-        .args(["enable", SYSTEMD_SERVICE])
-        .status();
-
-    println!(
-        "✅ Linux systemd 系统服务已安装: {}",
-        path.display()
-    );
-    println!("   启动: sudo systemctl start {}", SYSTEMD_SERVICE);
-    println!("   状态: sudo systemctl status {}", SYSTEMD_SERVICE);
+    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
+    let _ = Command::new("systemctl").args(["enable", name]).status();
+    println!("✅ Linux systemd 系统服务已安装: {}", path.display());
+    println!("   启动: sudo systemctl start {}", name);
+    println!("   状态: sudo systemctl status {}", name);
     Ok(())
 }
 
@@ -149,16 +112,58 @@ pub fn is_running(platform: Platform) -> Result<bool> {
     }
 }
 
+// --- systemd 通用 (客户端/服务端同名接口) ---
+
+/// `systemctl start <name>` (需 root 或已配好 sudo)
+pub fn start_named(name: &str) -> Result<()> {
+    let st = Command::new("systemctl")
+        .args(["start", name])
+        .status()
+        .with_context(|| format!("systemctl start {} 失败", name))?;
+    if !st.success() {
+        bail!("systemctl start {} 失败", name);
+    }
+    Ok(())
+}
+
+pub fn stop_named(name: &str) -> Result<()> {
+    let _ = Command::new("systemctl").args(["stop", name]).status();
+    Ok(())
+}
+
+pub fn enable_named(name: &str) -> Result<()> {
+    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
+    let _ = Command::new("systemctl").args(["enable", name]).status();
+    Ok(())
+}
+
+pub fn is_active_named(name: &str) -> Result<bool> {
+    let out = Command::new("systemctl")
+        .args(["is-active", name])
+        .output()
+        .with_context(|| format!("systemctl is-active {} 失败", name))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim() == "active")
+}
+
 // --- macOS (launchctl) ---
 
 fn start_macos() -> Result<()> {
     let plist = launchd_plist();
     if !plist.exists() {
-        std::fs::write(&plist, launchd_plist_content())
+        if let Some(parent) = plist.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        // var/ 必须先建, 否则 launchd 的 StandardOutPath 落不了地
+        std::fs::create_dir_all(crate::platform::gnp_var_dir()).ok();
+        std::fs::write(&plist, launchd_plist_content()?)
             .with_context(|| format!("写入 plist 失败: {}", plist.display()))?;
     }
+    // 已加载过先 unload, 保证新内容生效 (幂等)
     let _ = Command::new("launchctl")
-        .args(["load", plist.to_str().unwrap()])
+        .args(["unload", plist.to_str().unwrap_or("")])
+        .status();
+    let _ = Command::new("launchctl")
+        .args(["load", plist.to_str().unwrap_or("")])
         .status()
         .context("launchctl load 失败")?;
     if !is_running_macos()? {
@@ -171,9 +176,8 @@ fn stop_macos() -> Result<()> {
     let plist = launchd_plist();
     if plist.exists() {
         let _ = Command::new("launchctl")
-            .args(["unload", plist.to_str().unwrap()])
-            .status()
-            .context("launchctl unload 失败")?;
+            .args(["unload", plist.to_str().unwrap_or("")])
+            .status();
     }
     let _ = Command::new("pkill").args(["-f", "sing-box run"]).status();
     Ok(())
@@ -191,39 +195,25 @@ fn is_running_macos() -> Result<bool> {
 // --- Linux (systemd) ---
 
 fn start_linux() -> Result<()> {
-    // 确保 systemd 系统服务已安装 (未安装则自动创建, 修复全新部署 install+start 失败)
+    // 确保系统服务已安装 (未安装则自动创建, 修复全新部署 install+start 失败)
     if !systemd_system_unit_path().exists() {
         install_linux()?;
     }
-    let st = Command::new("systemctl")
-        .args(["start", SYSTEMD_SERVICE])
-        .status()
-        .context("systemctl start 失败")?;
-    if !st.success() {
-        bail!("systemctl start {} 失败", SYSTEMD_SERVICE);
-    }
-    Ok(())
+    start_named(SYSTEMD_SERVICE)
 }
 
 fn stop_linux() -> Result<()> {
-    let _ = Command::new("systemctl")
-        .args(["stop", SYSTEMD_SERVICE])
-        .status();
-    Ok(())
+    stop_named(SYSTEMD_SERVICE)
 }
 
 fn is_running_linux() -> Result<bool> {
-    let out = Command::new("systemctl")
-        .args(["is-active", SYSTEMD_SERVICE])
-        .output()
-        .context("systemctl is-active 失败")?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(stdout == "active")
+    is_active_named(SYSTEMD_SERVICE)
 }
+
 // --- Windows (schtasks 计划任务 + taskkill/tasklist) ---
 
-/// 计划任务名 (开机自启, SYSTEM 权限)
-const WIN_TASK: &str = "gnp-singbox";
+/// 计划任务名 (开机自启; 与 Linux 服务同名 `gnpc`)
+const WIN_TASK: &str = "gnpc";
 
 /// 计划任务是否存在
 fn win_task_exists() -> bool {
@@ -237,16 +227,19 @@ fn win_task_exists() -> bool {
 /// 生成隐形启动 VBS (Windows 控制台程序直接被计划任务拉起会在桌面弹黑窗;
 /// wscript Run(...,0) 完全无窗口, 且保持免管理员设计)
 fn win_hidden_vbs_path() -> PathBuf {
-    sb_dir().join("gnp-run-hidden.vbs")
+    gnp_bin_dir().join("gnp-run-hidden.vbs")
 }
 
 fn win_write_hidden_vbs() -> Result<PathBuf> {
     let vbs = win_hidden_vbs_path();
     let content = format!(
         "CreateObject(\"WScript.Shell\").Run \"\"\"{}\" run -c \"\"{}\"\"\", 0, False",
-        sb_bin().display(),
-        sb_config().display()
+        gnp_sb_bin().display(),
+        gnp_config_json().display()
     );
+    if let Some(parent) = vbs.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
     std::fs::write(&vbs, content)
         .with_context(|| format!("写入隐形启动 VBS 失败: {}", vbs.display()))?;
     Ok(vbs)
@@ -257,8 +250,7 @@ fn win_write_hidden_vbs() -> Result<PathBuf> {
 /// 注: 不用 /RU SYSTEM —— 那需要管理员权限创建; 桌面 Windows 场景
 /// ONLOGON(当前用户) 已够用, 且代理写 HKCU 也与用户会话一致。
 /// 通过 wscript VBS 隐形启动, 避免桌面弹黑窗 (2026-09-16 lwwin 实测)。
-/// 管理员环境想要开机即启+强自愈可用 SYSTEM + cmd 循环包壳方案:
-///   Register-ScheduledTask -User SYSTEM, Action=cmd /c "for /l %i in () do (<sb> run -c <cfg> & timeout /t 5 /nobreak >nul)"
+/// vmwin 默认 shell 是 cmd 不是 PowerShell, 保持这条路径。
 fn win_task_create() -> Result<()> {
     let vbs = win_write_hidden_vbs()?;
     let tr = format!("wscript.exe \"{}\"", vbs.display());
@@ -292,7 +284,7 @@ fn start_windows() -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    bail!("sing-box 启动失败 (计划任务已触发但进程未出现, 用 gnp-client status 检查配置)");
+    bail!("sing-box 启动失败 (计划任务已触发但进程未出现, 用 gnpc status 检查配置)");
 }
 
 /// Windows 停止: 结束任务 + 杀进程

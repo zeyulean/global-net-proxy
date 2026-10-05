@@ -1,0 +1,40 @@
+# lwtop-server.toml — lwtop (8.209.203.17) 服务端唯一事实源
+# 部署: scp lwtop-server.toml lwtop:/opt/gnp/config.toml
+#       sudo /opt/gnp/bin/gnps install --config /opt/gnp/config.toml
+# ⚠️ 8 个用户从 lwtop /opt/gnp-quic/config.json 的 inbounds[0].users 全量搬 (2026-10-05 实机同步)
+# ⚠️ 端口改动必须 ufw + 云安全组双侧, 且 ufw 持久化 (禁裸 iptables); docker 发布端口绕过 ufw
+
+[server]
+listen = "::"
+hy2_port = 5766
+
+[auth]
+obfs_password = "gnp-obfs-20261005"
+
+# 无名用户 (mac/aipro 共用)
+[[users]]
+password = "gnp-quic-test-password"
+
+[[users]]
+name = "mac-peertest"
+password = "gnp-acaba449a5f42c8248d2f412d1817e46"
+
+[[users]]
+password = "gnp-e22fb564a4d38f65aa25be4fed38be"
+
+# 与 lwmate 同密码
+[[users]]
+password = "gnp-f9edae36cc9e8b0f3f470d3d07db55b0"
+
+[[users]]
+password = "gnp-12aad6a1475cea11deeda9cda90b7f67"
+
+[[users]]
+password = "gnp-6745d66fce617e33e9e26f3692c6ce1d"
+
+[[users]]
+password = "gnp-c878242f1adecf91a0aac60146c52eb8"
+
+[[users]]
+name = "cozepc"
+password = "gnp-99e2e8cb6141a1a3d603c4133c6fe4e"

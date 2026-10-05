@@ -1,4 +1,4 @@
-//! gnp-client switch — 手动通道切换 (manual override)
+//! gnpc switch — 手动通道切换 (manual override)
 //!
 //! urltest(auto-out) 按"最快"自动选路, 不保证 hy2 优先; switch 提供 manual override:
 //!   auto → 交还 urltest 自动选路 (默认)
@@ -30,14 +30,14 @@ fn selector_tag(v: &serde_json::Value) -> Result<String> {
     gnp_core::config::find_outbound(v, "selector")
         .and_then(|ob| ob.get("tag").and_then(|t| t.as_str()))
         .map(|s| s.to_string())
-        .context("配置中没有 selector 出站 (旧配置? 重刷: gnp-client install)")
+        .context("配置中没有 selector 出站 (旧配置? 重刷: gnpc install)")
 }
 
 /// 切换 selector 到目标出站: API 热切换 + config default 写回
 ///
 /// 返回实际生效方式 ("api+config" / "config+restart")。
 pub fn set_selector(target: &str) -> Result<String> {
-    let cfg_path = platform::sb_config();
+    let cfg_path = platform::gnp_config_json();
     let mut v = gnp_core::config::load(&cfg_path)?;
     let sel_tag = selector_tag(&v)?;
 
@@ -82,7 +82,7 @@ pub fn set_selector(target: &str) -> Result<String> {
             } else {
                 bail!(
                     "clash_api 不可用 (旧配置无 clash_api 或 sing-box 异常)。\
-                     重刷配置后重试: gnp-client install"
+                     重刷配置后重试: gnpc install"
                 )
             }
         }
@@ -95,7 +95,7 @@ fn g_core_running(p: platform::Platform) -> bool {
 
 /// 显示当前通道选择状态
 pub fn show_current() -> Result<()> {
-    let cfg_path = platform::sb_config();
+    let cfg_path = platform::gnp_config_json();
     let v = gnp_core::config::load(&cfg_path)?;
     let sel_tag = selector_tag(&v)?;
     let sel = gnp_core::config::find_outbound(&v, &sel_tag);
@@ -108,22 +108,18 @@ pub fn show_current() -> Result<()> {
     println!("  {} 默认: {} (auto=自动选路, hy2=强制 QUIC, ssh=强制 TCP 兜底)", sel_tag, default);
 
     if let Some(addr) = api::controller_addr() {
-        if let Ok(proxies) = api::api_get_json(&addr, "/proxies", 2) {
-            if let Some(now) = proxies
-                .get(&sel_tag)
-                .and_then(|p| p.get("now"))
-                .and_then(|n| n.as_str())
-            {
+        if let Ok(proxies) = api::proxies_map(&addr, 2) {
+            if let Some(now) = api::proxy_now(&proxies, &sel_tag) {
                 println!("  当前生效 (热): {}", now);
             }
-            if let Some(auto) = proxies.get("auto-out").and_then(|p| p.get("now")).and_then(|n| n.as_str()) {
+            if let Some(auto) = api::proxy_now(&proxies, "auto-out") {
                 println!("  urltest(auto-out) 选中: {}", auto);
             }
         }
     } else {
-        println!("  (旧配置无 clash_api, 热状态不可见 — 重刷: gnp-client install)");
+        println!("  (旧配置无 clash_api, 热状态不可见 — 重刷: gnpc install)");
     }
-    println!("\n用法: gnp-client switch <auto|hy2|ssh>");
+    println!("\n用法: gnpc switch <auto|hy2|ssh>");
     Ok(())
 }
 

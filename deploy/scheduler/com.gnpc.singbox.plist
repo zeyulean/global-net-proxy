@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.gnpc.singbox</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{SB_BIN}}</string>
+        <string>run</string><string>-c</string>
+        <string>{{CONFIG}}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>{{SB_LOG}}</string>
+    <key>StandardErrorPath</key><string>{{SB_ERR}}</string>
+</dict>
+</plist>

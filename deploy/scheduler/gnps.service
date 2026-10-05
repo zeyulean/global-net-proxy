@@ -1,0 +1,16 @@
+[Unit]
+Description=GNP Server (gnps, hysteria2 inbound, UDP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{SB_BIN}} run -c {{CONFIG}}
+Restart=always
+RestartSec=3
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

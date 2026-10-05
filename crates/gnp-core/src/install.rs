@@ -1,8 +1,10 @@
 //! 安装模块 — 下载 sing-box + 规则集 + 生成 config
 //!
-//! 完全自包含, 不依赖 repo。下载到 ~/.local/share/sing-box/。
+//! 目录收敛到 `~/.local/gnp/` (客户端) — bin/ rules/ var/ secrets/ backups/。
+//! 配置形态: config.toml (唯一事实源) → config.json (生成物)。
 
-use crate::platform::{sb_bin, sb_config, sb_dir, sb_rules_dir};
+use crate::platform::{gnp_config_json, gnp_rules_dir, gnp_sb_bin, gnp_var_dir};
+use crate::settings::ClientSettings;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
@@ -33,10 +35,55 @@ fn detect_arch() -> &'static str {
     }
 }
 
+/// 本地代理地址 (curl 走它下 GitHub)
+pub const LOCAL_PROXY: &str = "socks5h://127.0.0.1:1080";
+
+/// 下载一个文件: 先直连, 直连不通再走本地代理 (127.0.0.1:1080)
+///
+/// 为什么要代理兜底: raw.githubusercontent.com / github release 在国内直连不通,
+/// 而这些机器**唯一稳定的出站路径就是自己的代理**。直连失败就借代理,
+/// 否则 tick 每晚 rules-update 都会 WARN (§7.1 验收 3 要求"无持续 WARN")。
+/// 返回实际用的通道 ("direct" / "proxy"), 供日志显示。
+pub fn fetch(url: &str, out: &Path, max_time_s: u64) -> Result<&'static str> {
+    let try_direct = || -> bool {
+        Command::new("curl")
+            .args(["-fsSL", "--max-time", &max_time_s.to_string(), "-o"])
+            .arg(out)
+            .arg(url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false) && out.exists()
+    };
+    if try_direct() {
+        return Ok("direct");
+    }
+    if crate::platform::port_open(1080) {
+        let ok = Command::new("curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                &max_time_s.to_string(),
+                "-x",
+                LOCAL_PROXY,
+                "-o",
+            ])
+            .arg(out)
+            .arg(url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+            && out.exists();
+        if ok {
+            return Ok("proxy");
+        }
+    }
+    Ok("failed")
+}
+
 /// 下载并解压 sing-box 二进制
 pub fn install_singbox(url: Option<&str>) -> Result<()> {
-    let dir = sb_dir();
-    std::fs::create_dir_all(&dir).context("创建 sing-box 目录失败")?;
+    let dir = crate::platform::gnp_bin_dir();
+    std::fs::create_dir_all(&dir).context("创建 bin 目录失败")?;
 
     let url = match url {
         Some(u) => u.to_string(),
@@ -54,14 +101,10 @@ pub fn install_singbox(url: Option<&str>) -> Result<()> {
         "sing-box.tar.gz"
     });
 
-    let st = Command::new("curl")
-        .args(["-fL", "--retry", "3", "-o"])
-        .arg(&archive)
-        .arg(&url)
-        .status()
-        .context("curl 下载失败")?;
-    if !st.success() {
-        bail!("下载 sing-box 失败: {}", url);
+    match fetch(&url, &archive, 300)? {
+        "direct" => println!("  ↘ 直连"),
+        "proxy" => println!("  ↘ 直连不通, 经本地代理 {} 下载", LOCAL_PROXY),
+        _ => bail!("下载 sing-box 失败 (直连与代理都不通): {}", url),
     }
 
     // 解压 (Linux/macOS: tar.gz; Windows: zip 用 PowerShell Expand-Archive)
@@ -94,17 +137,17 @@ pub fn install_singbox(url: Option<&str>) -> Result<()> {
 
     // 找到二进制 (sing-box-<ver>-<os>-<arch>/sing-box)
     let bin = find_bin(&tmp_dir).context("在解压目录中找不到 sing-box 二进制")?;
-    std::fs::copy(&bin, sb_bin()).context("复制 sing-box 二进制失败")?;
+    std::fs::copy(&bin, gnp_sb_bin()).context("复制 sing-box 二进制失败")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(sb_bin(), std::fs::Permissions::from_mode(0o755)).ok();
+        std::fs::set_permissions(gnp_sb_bin(), std::fs::Permissions::from_mode(0o755)).ok();
     }
 
     // 清理临时文件
     std::fs::remove_dir_all(&tmp_dir).ok();
 
-    println!("✅ sing-box 安装完成: {}", sb_bin().display());
+    println!("✅ sing-box 安装完成: {}", gnp_sb_bin().display());
     Ok(())
 }
 
@@ -128,11 +171,13 @@ fn find_bin(dir: &Path) -> Option<std::path::PathBuf> {
 
 /// 下载规则集到 rules/ 目录
 pub fn install_rules() -> Result<()> {
-    let rules_dir = sb_rules_dir();
+    let rules_dir = gnp_rules_dir();
     std::fs::create_dir_all(&rules_dir).context("创建 rules 目录失败")?;
 
     // 国外分组规则
     let foreign_groups = ["google", "github", "openai", "anthropic", "docker"];
+    let mut ok = 0;
+    let mut total = 0;
     for g in foreign_groups {
         let url = format!(
             "https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite/geosite-{}.srs",
@@ -140,7 +185,10 @@ pub fn install_rules() -> Result<()> {
         );
         let out = rules_dir.join(format!("geosite-{}.srs", g));
         println!("  ⬇️  geosite-{}", g);
-        download_rule_tmp(&url, &out);
+        total += 1;
+        if download_rule_tmp(&url, &out) {
+            ok += 1;
+        }
     }
 
     // 国内规则
@@ -151,33 +199,47 @@ pub fn install_rules() -> Result<()> {
     for (name, url) in cn_rules {
         let out = rules_dir.join(format!("{}.srs", name));
         println!("  ⬇️  {}", name);
-        download_rule_tmp(url, &out);
+        total += 1;
+        if download_rule_tmp(url, &out) {
+            ok += 1;
+        }
     }
-    println!("✅ 规则集安装完成: {}", rules_dir.display());
+    println!("✅ 规则集安装完成: {}/{} 成功 — {}", ok, total, rules_dir.display());
+    if ok == 0 {
+        // 全军覆没: tick 会把非零退出落成 WARN, 这是对的事实 (规则彻底不新鲜)
+        bail!("规则集全部下载失败 (直连与本地代理 {} 都不通)", LOCAL_PROXY);
+    }
     Ok(())
 }
 
 /// 下载规则到 .tmp, 成功才替换 (失败不污染已有有效规则文件)
-fn download_rule_tmp(url: &str, out: &Path) {
+///
+/// 通道: 直连优先, 不通则经本地代理 (见 [`fetch`]) —— 否则每晚 tick 都会 WARN。
+/// 返回是否拿到新文件。
+fn download_rule_tmp(url: &str, out: &Path) -> bool {
     let tmp = out.with_extension("srs.tmp");
-    let st = Command::new("curl")
-        .args(["-fsSL", "--max-time", "30"])
-        .arg("-o")
-        .arg(&tmp)
-        .arg(url)
-        .status();
-    match st {
-        Ok(s) if s.success() && tmp.exists() => {
+    match fetch(url, &tmp, 60) {
+        Ok("direct") => {
             let _ = std::fs::rename(&tmp, out);
-            println!("    ✓ 下载完成");
+            println!("    ✓ 下载完成 (直连)");
+            true
+        }
+        Ok("proxy") => {
+            let _ = std::fs::rename(&tmp, out);
+            println!("    ✓ 下载完成 (经本地代理 {})", LOCAL_PROXY);
+            true
         }
         _ => {
             let _ = std::fs::remove_file(&tmp);
             if out.exists() {
-                println!("    ⚠️ 下载失败, 保留现有 {}", out.file_name().unwrap_or_default().to_string_lossy());
+                println!(
+                    "    ⚠️ 下载失败 (直连与代理都不通), 保留现有 {}",
+                    out.file_name().unwrap_or_default().to_string_lossy()
+                );
             } else {
                 println!("    ✗ 失败 (且本地无缓存)");
             }
+            false
         }
     }
 }
@@ -208,55 +270,22 @@ impl SshFallback {
     }
 }
 
-/// client 配置生成参数
-#[derive(Debug, Clone)]
-pub struct ClientConfigParams {
-    pub server: String,
-    pub password: String,
-    pub server_port: u16,
-    /// salamander obfs 密码; None = 不带 obfs (须与服务端 inbound 一致)
-    pub obfs_password: Option<String>,
-    /// mixed 监听地址 (默认 0.0.0.0; 单机自用可 127.0.0.1)
-    pub listen: String,
-    /// 本地域名预定义解析 [(域名, IP)]; 写入 dns-hosts + 路由直连 (Mac *.host 用法)
-    pub hosts: Vec<(String, String)>,
-    /// ssh 兜底通道; None = 单通道 (旧行为)
-    pub ssh_fallback: Option<SshFallback>,
-    /// clash_api 端口 (127.0.0.1); None = 不开 — switch/status/guard 依赖它
-    pub clash_api_port: Option<u16>,
-    /// 输出路径; None = 写 sing-box 标准位置
-    ///
-    /// Some(path) = "只生成配置文件" 模式 (供跨机部署: HOME=<目标机home> + --out),
-    /// cmd_install 据此跳过规则下载与服务安装。
-    pub output: Option<std::path::PathBuf>,
-}
-
-impl ClientConfigParams {
-    pub fn new(server: &str, password: &str, server_port: u16) -> Self {
-        Self {
-            server: server.to_string(),
-            password: password.to_string(),
-            server_port,
-            obfs_password: None,
-            listen: "0.0.0.0".to_string(),
-            hosts: Vec::new(),
-            ssh_fallback: Some(SshFallback::for_server(server)),
-            clash_api_port: Some(9090),
-            output: None,
-        }
-    }
-}
-
 /// 构造 client config.json 内容 (纯函数, 便于测试)
+///
+/// 入参 = config.toml 唯一事实源 (`ClientSettings`)。**生成逻辑零变更**:
+/// 双通道/clash_api/hosts/dns-detour 跟随组等 2026-10-05 已实测形态, 勿动。
 ///
 /// 出站拓扑 (2026-10-05 MTU 黑洞事件 P0):
 ///   route.final → proxy-out (selector, 默认 auto-out)
 ///     → auto-out (urltest: hy2-out + ssh-out, 自动降级/回切)
 ///     → hy2-out (QUIC 主通道) / ssh-out (TCP 兜底) / direct
-pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
+pub fn build_config(p: &ClientSettings) -> serde_json::Value {
+    let ssh_fallback = p.ssh_fallback();
+    let hosts = p.hosts();
+
     // 出站: selector → urltest → hy2(+obfs) / ssh / direct
     let mut outbounds = Vec::new();
-    if p.ssh_fallback.is_some() {
+    if ssh_fallback.is_some() {
         outbounds.push(serde_json::json!({
             "type": "selector",
             "tag": "proxy-out",
@@ -276,16 +305,16 @@ pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
     let mut hy2 = serde_json::json!({
         "type": "hysteria2",
         "tag": "hy2-out",
-        "server": p.server,
-        "server_port": p.server_port,
-        "password": p.password,
+        "server": p.server.host,
+        "server_port": p.server.hy2_port,
+        "password": p.auth.hy2_password,
         "tls": { "enabled": true, "insecure": true }
     });
-    if let Some(obfs) = &p.obfs_password {
+    if let Some(obfs) = p.obfs() {
         hy2["obfs"] = serde_json::json!({ "type": "salamander", "password": obfs });
     }
     outbounds.push(hy2);
-    if let Some(ssh) = &p.ssh_fallback {
+    if let Some(ssh) = &ssh_fallback {
         outbounds.push(serde_json::json!({
             "type": "ssh",
             "tag": "ssh-out",
@@ -298,7 +327,7 @@ pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
 
     // route.final: 双通道 → selector; 单通道 → hy2 (旧行为)
-    let final_out = if p.ssh_fallback.is_some() { "proxy-out" } else { "hy2-out" };
+    let final_out = if ssh_fallback.is_some() { "proxy-out" } else { "hy2-out" };
     // DNS 远程解析 detour 跟随 route.final — hy2 死时 DNS 必须同步降级, 否则 ssh 兜底残废
     let dns_detour = final_out;
 
@@ -312,10 +341,9 @@ pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
         serde_json::json!({ "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" }),
         serde_json::json!({ "ip_is_private": true, "outbound": "direct" }),
     ];
-    if !p.hosts.is_empty() {
-        let names: Vec<&str> = p.hosts.iter().map(|(n, _)| n.as_str()).collect();
-        let predefined: serde_json::Map<String, serde_json::Value> = p
-            .hosts
+    if !hosts.is_empty() {
+        let names: Vec<&str> = hosts.iter().map(|(n, _)| n.as_str()).collect();
+        let predefined: serde_json::Map<String, serde_json::Value> = hosts
             .iter()
             .map(|(n, ip)| (n.clone(), serde_json::Value::String(ip.clone())))
             .collect();
@@ -331,10 +359,10 @@ pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
     let mut experimental = serde_json::json!({
         "cache_file": {
             "enabled": true,
-            "path": sb_dir().join("cache.db").to_str().unwrap()
+            "path": gnp_var_dir().join("cache.db").to_str().unwrap()
         }
     });
-    if let Some(port) = p.clash_api_port {
+    if let Some(port) = p.clash_api() {
         experimental["clash_api"] = serde_json::json!({
             "external_controller": format!("127.0.0.1:{}", port)
         });
@@ -355,14 +383,14 @@ pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
         "inbounds": [{
             "type": "mixed",
             "tag": "mixed-in",
-            "listen": p.listen,
+            "listen": p.client.listen,
             "listen_port": 1080
         }],
         "outbounds": outbounds,
         "route": {
             "rule_set": [
-                { "type": "local", "tag": "geosite-cn", "format": "binary", "path": sb_rules_dir().join("geosite-cn.srs").to_str().unwrap() },
-                { "type": "local", "tag": "geoip-cn", "format": "binary", "path": sb_rules_dir().join("geoip-cn.srs").to_str().unwrap() }
+                { "type": "local", "tag": "geosite-cn", "format": "binary", "path": gnp_rules_dir().join("geosite-cn.srs").to_str().unwrap() },
+                { "type": "local", "tag": "geoip-cn", "format": "binary", "path": gnp_rules_dir().join("geoip-cn.srs").to_str().unwrap() }
             ],
             "rules": route_rules,
             "final": final_out,
@@ -374,29 +402,80 @@ pub fn build_config(p: &ClientConfigParams) -> serde_json::Value {
     })
 }
 
-/// 生成 config.json (默认写 sing-box 标准位置; params.output 指定则写该路径)
-pub fn generate_config(p: &ClientConfigParams) -> Result<()> {
+/// 渲染 config.json 文本 (纯函数)
+pub fn render_config(p: &ClientSettings) -> Result<String> {
     let config = build_config(p);
-    let content = serde_json::to_string_pretty(&config)
-        .context("序列化 config 失败")?;
-    let out = p.output.clone().unwrap_or_else(sb_config);
+    serde_json::to_string_pretty(&config).context("序列化 config 失败")
+}
+
+/// 生成 config.json 到 `out` (缺省 `$GNP_HOME/config.json` = 生成物)
+pub fn generate_config_to(p: &ClientSettings, out: Option<&Path>) -> Result<std::path::PathBuf> {
+    let content = render_config(p)?;
+    let out = out
+        .map(|x| x.to_path_buf())
+        .unwrap_or_else(gnp_config_json);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(&out, content).with_context(|| format!("写 config 失败: {}", out.display()))?;
+    Ok(out)
+}
+
+/// 生成 config.json (默认写生成物位置)
+pub fn generate_config(p: &ClientSettings) -> Result<std::path::PathBuf> {
+    let out = generate_config_to(p, None)?;
     println!("✅ 配置生成: {}", out.display());
+    Ok(out)
+}
+
+/// `sing-box check` 校验 config.json (迁移/安装必须过 — 坏配置不许顶掉旧服务)
+pub fn check_config_file(cfg: &Path) -> Result<()> {
+    let sb = crate::platform::gnp_sb_bin();
+    if !sb.exists() {
+        bail!("sing-box 不存在, 无法 check: {}", sb.display());
+    }
+    let out = Command::new(&sb)
+        .args(["check", "-c"])
+        .arg(cfg)
+        .output()
+        .context("sing-box check 启动失败")?;
+    if !out.status.success() {
+        bail!(
+            "sing-box check 失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{ClientAuth, ClientLocal, ClientServer};
+    use std::collections::BTreeMap;
+
+    /// 双通道默认 settings (server 8.209.203.17:5766 + obfs + ssh 兜底)
+    fn dual() -> ClientSettings {
+        ClientSettings {
+            server: ClientServer {
+                host: "1.2.3.4".to_string(),
+                hy2_port: 5766,
+                ssh_port: 22,
+                ssh_user: "lw".to_string(),
+                ssh_key: "~/.ssh/id_ed25519".to_string(),
+            },
+            auth: ClientAuth {
+                hy2_password: "pw".to_string(),
+                obfs_password: "obfs-pw".to_string(),
+            },
+            client: ClientLocal::default(),
+            guard: Default::default(),
+        }
+    }
 
     #[test]
     fn dual_channel_shape() {
-        let mut p = ClientConfigParams::new("1.2.3.4", "pw", 443);
-        p.obfs_password = Some("obfs-pw".to_string());
-        let c = build_config(&p);
+        let c = build_config(&dual());
 
         // route.final → selector → 默认 urltest
         assert_eq!(c["route"]["final"], "proxy-out");
@@ -412,6 +491,8 @@ mod tests {
         // hy2 带 obfs; ssh 兜底结构
         let hy2 = &c["outbounds"][2];
         assert_eq!(hy2["tag"], "hy2-out");
+        assert_eq!(hy2["server"], "1.2.3.4");
+        assert_eq!(hy2["server_port"], 5766);
         assert_eq!(hy2["obfs"]["type"], "salamander");
         let ssh = &c["outbounds"][3];
         assert_eq!(ssh["tag"], "ssh-out");
@@ -424,15 +505,20 @@ mod tests {
         assert_eq!(c["dns"]["servers"][1]["detour"], "proxy-out");
         // clash_api 默认开 (switch/status/guard 依赖)
         assert_eq!(c["experimental"]["clash_api"]["external_controller"], "127.0.0.1:9090");
-        // cache_file 绝对路径
+        // cache_file 绝对路径 (坑清单 #1)
         assert!(c["experimental"]["cache_file"]["path"].as_str().unwrap().starts_with('/'));
+        // cache_file 在 var/ 下
+        assert!(c["experimental"]["cache_file"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("var/cache.db"));
     }
 
     #[test]
     fn single_channel_legacy_shape() {
-        let mut p = ClientConfigParams::new("1.2.3.4", "pw", 443);
-        p.ssh_fallback = None;
-        p.clash_api_port = None;
+        let mut p = dual();
+        p.server.ssh_user = String::new(); // 空 ssh_user = 关兜底
+        p.client.clash_api_port = 0; // 0 = 关 clash_api
         let c = build_config(&p);
         assert_eq!(c["route"]["final"], "hy2-out");
         assert_eq!(c["dns"]["servers"][1]["detour"], "hy2-out");
@@ -443,13 +529,34 @@ mod tests {
 
     #[test]
     fn hosts_wiring() {
-        let mut p = ClientConfigParams::new("1.2.3.4", "pw", 443);
-        p.hosts = vec![("aipro.host".into(), "192.168.1.2".into())];
+        let mut p = dual();
+        let mut hosts = BTreeMap::new();
+        hosts.insert("aipro.host".to_string(), "192.168.1.2".to_string());
+        p.client.hosts = hosts;
         let c = build_config(&p);
         assert_eq!(c["dns"]["servers"][2]["tag"], "dns-hosts");
         assert_eq!(c["dns"]["servers"][2]["predefined"]["aipro.host"], "192.168.1.2");
         assert_eq!(c["dns"]["rules"][0]["server"], "dns-hosts");
         assert_eq!(c["route"]["rules"][0]["outbound"], "direct");
         assert_eq!(c["route"]["rules"][0]["domain_suffix"][0], "aipro.host");
+    }
+
+    #[test]
+    fn listen_and_port_from_settings() {
+        let mut p = dual();
+        p.client.listen = "127.0.0.1".to_string();
+        p.server.hy2_port = 443;
+        let c = build_config(&p);
+        assert_eq!(c["inbounds"][0]["listen"], "127.0.0.1");
+        assert_eq!(c["inbounds"][0]["listen_port"], 1080);
+        assert_eq!(c["outbounds"][2]["server_port"], 443);
+    }
+
+    #[test]
+    fn no_obfs_when_blank() {
+        let mut p = dual();
+        p.auth.obfs_password = String::new();
+        let c = build_config(&p);
+        assert!(c["outbounds"][2].get("obfs").is_none());
     }
 }

@@ -1,0 +1,29 @@
+# mac.toml — Mac 客户端 (单机自用, 唯一含 [client.hosts] 的主机)
+# 部署: scp mac.toml <mac>:~/.local/gnp/config.toml && gnpc install
+# ⚠️ 本文件是唯一事实源, 勿手改 (除非要改配置本身); config.json 是生成物。
+
+[server]
+host = "8.209.203.17"
+hy2_port = 5766            # GNP_PORT (代码默认值); 服务端勿轻改
+ssh_port = 22              # ssh 兜底通道
+ssh_user = "lw"            # 空 = 关闭 ssh 兜底 (单通道旧形态)
+ssh_key  = "~/.ssh/id_ed25519"   # ~ 由 gnpc 展开
+
+[auth]
+hy2_password  = "gnp-quic-test-password"
+obfs_password = "gnp-obfs-20261005"   # 服务端 inbound 强制 salamander
+
+[client]
+listen = "127.0.0.1"       # mac 单机自用; aipro/lwmate/cozepc = "0.0.0.0"
+clash_api_port = 9090      # 0 = 关闭 (switch/status/guard 依赖它)
+
+[client.hosts]             # 可选: 预定义解析 + 路由直连 (仅 mac 用)
+                            # ⚠️ 域名含点 → key 必须加引号, 否则 TOML 当成嵌套表 (aipro.host → [aipro] host)
+"aipro.host" = "192.168.1.2"
+"lwtop.host" = "8.209.203.17"
+"mac.host"   = "127.0.0.1"
+
+[guard]
+freeze_after_failures = 2
+backoff_base_s = 60
+backoff_cap_s  = 180       # 对齐 urltest 3m; 再大会拖慢恢复回切 (实测教训)

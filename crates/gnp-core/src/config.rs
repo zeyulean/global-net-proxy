@@ -125,3 +125,26 @@ pub fn has_hy2_endpoint(v: &Value) -> bool {
         })
         .unwrap_or(false)
 }
+/// 比较两个 config 是否同源 (由同一个 config.toml 渲染)
+///
+/// 忽略 `gnpc switch` 拥有的可变字段: selector 出站的 `default`
+/// (switch 会把它写回 config.json, 那是运行态, 不是"被手改")。
+/// 其余任何差异都算不一致 —— 生成物只该由 `gnpc install` 产生。
+pub fn same_shape(a: &Value, b: &Value) -> bool {
+    normalize(a) == normalize(b)
+}
+
+fn normalize(v: &Value) -> Value {
+    let mut out = v.clone();
+    if let Some(obs) = out.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+        for ob in obs.iter_mut() {
+            let is_selector = ob.get("type").and_then(|t| t.as_str()) == Some("selector");
+            if is_selector {
+                if let Some(m) = ob.as_object_mut() {
+                    m.remove("default");
+                }
+            }
+        }
+    }
+    out
+}

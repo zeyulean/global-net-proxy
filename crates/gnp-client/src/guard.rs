@@ -1,35 +1,27 @@
-//! gnp-client guard — 通道看门狗 (退避探测 + 故障冻结 + 告警)
+//! gnpc guard — 通道看门狗 (退避探测 + 故障冻结 + 告警)
 //!
-//! 设计为 cron 每分钟调一次 (`gnp-client guard --install-cron` 安装), 单 tick 无常驻。
+//! **单 tick 无常驻**: 由 tick.sh 每分钟调一次 (调度唯一, D3); 手动跑用 `gnpc guard`,
+//! 不要自己写 cron (会破坏调度唯一性)。参数取自 config.toml `[guard]`, 状态/日志落 `var/`。
 //!
 //! 职责 (2026-10-05 MTU 事件 P1):
 //! 1. hy2 健康探测 — clash_api delay (5000ms 超时)
-//! 2. 指数退避 — 连续失败后探测间隔 1m→2m→4m→…→cap 1h (±20% 抖动),
+//! 2. 指数退避 — 连续失败后探测间隔 backoff_base_s→2^n→cap (默认 60s→180s, ±20% 抖动),
 //!    把"服务端重启 → 全员重连风暴"这类二次伤害掐掉 (hysteria2 社区知名 QoS 触发模式);
 //!    sing-box 内部连接级重试不可配置, 退避在编排层实现并落日志 (验收④"日志里退避间隔可见")
-//! 3. 故障冻结 — 连续 2 次失败 → selector 强制 ssh-out (urltest 3m 探测周期太久);
+//! 3. 故障冻结 — 连续 freeze_after_failures 次失败 → selector 强制 ssh-out
+//!    (urltest 3m 探测周期太久);
 //!    恢复探测通过 → 自动解冻交还 urltest
 //! 4. 告警 — 状态翻转立即告警, 持续故障 30min 限频; 渠道: GNP_ALERT_CMD > osascript(Mac)
 //!    > notify-send(Linux), 始终落 guard.log
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::Result;
 use serde_json::json;
 use std::process::Command;
 
 use crate::api;
-use gnp_core::platform::{self, sb_dir};
+use gnp_core::platform;
+use gnp_core::settings::GuardSettings;
 
-const STATE_FILE: &str = "guard-state.json";
-const LOG_FILE: &str = "guard.log";
-/// 连续失败几次后冻结到 ssh
-const FREEZE_AFTER: u32 = 2;
-/// 探测退避: 60s * 2^n, 上限 180s (= urltest 3m 探测周期)
-///
-/// 上限不能太高: 退避同时延迟"恢复检测"(实测 1h 上限会让回切滞后 26min);
-/// cap 对齐 urltest 周期后, 恢复检测 ≤4min, 且单机 1 次/3min 的 QUIC 握手
-/// 远够不成重连风暴 (风暴 = 多机 × 每连接重试, urltest 机制下不存在)。
-const BACKOFF_BASE_S: u64 = 60;
-const BACKOFF_CAP_S: u64 = 180;
 /// 持续故障告警限频
 const ALERT_REPEAT_MS: u64 = 30 * 60 * 1000;
 /// 健康心跳日志间隔 (免日志爆炸)
@@ -46,65 +38,33 @@ struct GuardState {
     last_heartbeat_ms: u64,
 }
 
-pub fn run(install_cron: bool) -> Result<()> {
-    if install_cron {
-        return install_cron_job();
-    }
+/// 入口: 跑一次 tick (调度由 tick.sh 负责, 本命令不装 cron)
+pub fn run() -> Result<()> {
     tick()
 }
 
-// --- cron ---
-
-fn install_cron_job() -> Result<()> {
-    let self_path = std::env::current_exe()?;
-    let log = sb_dir().join(LOG_FILE);
-    let cron_line = format!("* * * * * {} guard >> {} 2>&1", self_path.display(), log.display());
-
-    let existing = Command::new("crontab").args(["-l"]).output();
-    let mut lines: Vec<String> = Vec::new();
-    if let Ok(out) = existing {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if !line.contains("gnp-client") && !line.contains("global-net-proxy") {
-                    lines.push(line.to_string());
-                }
-            }
-        }
-    }
-    lines.push(cron_line.clone());
-
-    use std::io::Write;
-    let mut st = Command::new("crontab")
-        .args(["-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("crontab 启动失败")?;
-    {
-        let mut child = st;
-        // 显式关闭 stdin — 不 drop 则 crontab 等不到 EOF, 安装会永久挂起
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(lines.join("\n").as_bytes());
-        }
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            bail!("crontab 安装失败: {}", String::from_utf8_lossy(&output.stderr));
-        }
-    }
-    println!("✅ guard cron 已安装 (每分钟): {}", cron_line);
-    Ok(())
+/// guard 参数: config.toml `[guard]`, 读不到用缺省 (实测教训值)
+fn guard_settings() -> GuardSettings {
+    gnp_core::settings::ClientSettings::load_or_default().guard
 }
 
 // --- 单 tick ---
 
 fn tick() -> Result<()> {
-    let state_path = sb_dir().join(STATE_FILE);
+    let g = guard_settings();
+    // var/ 一定要先在 (服务刚起时可能还没有)
+    if let Some(parent) = platform::gnp_var_dir().parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::create_dir_all(platform::gnp_var_dir()).ok();
+    let state_path = platform::gnp_guard_state();
     let mut st: GuardState = std::fs::read_to_string(&state_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     let now = now_ms();
 
-    // sing-box 存活兜底 (update-rules check 的轻量重复, guard 顺带)
+    // sing-box 存活兜底 (guard 顺带, 不额外等 rules-update)
     let addr = match api::controller_addr() {
         Some(a) => a,
         None => {
@@ -165,10 +125,10 @@ fn tick() -> Result<()> {
             // guard 在 hy2 健康且 selector=auto-out 时把 urltest 卡在 ssh 的情况
             // 纠正为 hy2-out; 手动 switch ssh (selector≠auto-out) 不受影响。
             if !was_down {
-                if let Ok(proxies) = api::api_get_json(&addr, "/proxies", 2) {
-                    let sel_now = proxies.get("proxy-out").and_then(|p| p.get("now")).and_then(|n| n.as_str());
-                    let auto_now = proxies.get("auto-out").and_then(|p| p.get("now")).and_then(|n| n.as_str());
-                    if sel_now == Some("auto-out") && auto_now == Some("ssh-out") {
+                if let Ok(proxies) = api::proxies_map(&addr, 2) {
+                    let sel_now = api::proxy_now(&proxies, "proxy-out");
+                    let auto_now = api::proxy_now(&proxies, "auto-out");
+                    if sel_now.as_deref() == Some("auto-out") && auto_now.as_deref() == Some("ssh-out") {
                         log("INFO  hy2 健康但 urltest 因 tolerance 停在 ssh-out → 强制 hy2-out");
                         if let Err(e) = crate::switch::set_selector("hy2-out") {
                             log(&format!("ERROR 强制 hy2 失败: {}", e));
@@ -180,9 +140,12 @@ fn tick() -> Result<()> {
         Err(_) => {
             st.failures += 1;
             // 指数退避 + 20% 抖动: 60 * 2^(n-1), cap 1h
-            let base = BACKOFF_BASE_S
+            // cap 不能太高: 退避同时延迟"恢复检测" (实测 1h 上限让回切滞后 26min);
+            // cap 对齐 urltest 3m 周期后恢复检测 ≤4min
+            let base = g
+                .backoff_base_s
                 .saturating_mul(1u64 << (st.failures - 1).min(6))
-                .min(BACKOFF_CAP_S);
+                .min(g.backoff_cap_s);
             let jitter_pct = 80 + (now % 41) as u64; // 80~120%
             let backoff_s = base * jitter_pct / 100;
             st.next_probe_ms = now + backoff_s * 1000;
@@ -191,7 +154,7 @@ fn tick() -> Result<()> {
                 st.failures, backoff_s
             ));
 
-            if st.failures >= FREEZE_AFTER && !st.frozen {
+            if st.failures >= g.freeze_after_failures && !st.frozen {
                 match crate::switch::set_selector("ssh-out") {
                     Ok(_) => {
                         st.frozen = true;
@@ -250,7 +213,7 @@ fn log(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(sb_dir().join(LOG_FILE))
+        .open(platform::gnp_guard_log())
     {
         let _ = writeln!(f, "{}", line);
     }

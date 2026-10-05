@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "global-net-proxy client CLI — 管理 sing-box mixed 代理 (wg 隧道)"
+description = "gnpc — global-net-proxy client CLI (sing-box mixed 代理)"
 
 [[bin]]
-name = "gnp-client"
+name = "gnpc"
 path = "src/main.rs"
 
 [dependencies]

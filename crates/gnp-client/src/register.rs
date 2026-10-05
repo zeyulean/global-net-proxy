@@ -1,4 +1,4 @@
-//! gnp-client register — 新机器一键自动注册
+//! gnpc register — 新机器一键自动注册
 //!
 //! 从 gitee 私有仓库拉取预生成的 peer 配置池, 挑一个 status=available 的,
 //! 标记为 used 并 push, 然后自动安装 sing-box + 规则集 + 生成 config。
@@ -16,9 +16,12 @@ const GITEE_BRANCH: &str = "main";
 
 /// lwtop server 配置 (hysteria2/QUIC, 密码认证)
 const SERVER_HOST: &str = "8.209.203.17";
-const SERVER_PORT: u16 = 443;
-/// 测试密码 (与 server 端 /opt/gnp-quic 配置一致)
+/// hy2 端口 = GNP_PORT (5766); peer 池 JSON 可用 server_endpoint 覆盖
+const SERVER_PORT: u16 = gnp_core::platform::GNP_PORT;
+/// 测试密码 (与 server 端 /opt/gnp/config.toml 一致)
 const HY2_PASSWORD: &str = "gnp-quic-test-password";
+/// salamander obfs 密码 (服务端 inbound 强制; §3.9 同步进 peer 池)
+const OBFS_PASSWORD: &str = "gnp-obfs-20261005";
 
 /// peer 池 JSON 结构 (hysteria2: 只需 password)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +32,12 @@ pub struct Peer {
     pub status: String,
     #[serde(default)]
     pub activated: bool,
+    /// "ip:port" (gnps pregen 生成; 缺省用 SERVER_HOST:SERVER_PORT)
+    #[serde(default)]
+    pub server_endpoint: Option<String>,
+    /// salamander obfs 密码 (缺省 = 全网统一 OBFS_PASSWORD)
+    #[serde(default)]
+    pub obfs: Option<String>,
 }
 
 /// register 参数
@@ -70,7 +79,7 @@ fn read_peers(peers_dir: &Path) -> Result<Vec<Peer>> {
     let mut peers = Vec::new();
     if !peers_dir.is_dir() {
         bail!(
-            "peers/ 目录不存在: {}。请先在 lwtop 上运行: gnp-server pregen <N>",
+            "peers/ 目录不存在: {}。请先在 lwtop 上运行: gnps pregen <N>",
             peers_dir.display()
         );
     }
@@ -133,7 +142,7 @@ fn select_peer<'a>(peers: &'a [Peer], client_id: &str) -> Result<&'a Peer> {
     peers
         .iter()
         .find(|p| p.status == "available")
-        .ok_or_else(|| anyhow::anyhow!("没有可用的 peer (status=available)。请在 lwtop 上运行: gnp-server pregen <N>"))
+        .ok_or_else(|| anyhow::anyhow!("没有可用的 peer (status=available)。请在 lwtop 上运行: gnps pregen <N>"))
 }
 
 /// 标记 peer 为 used 并 push 到 gitee
@@ -186,64 +195,54 @@ fn verify_server_password(repo: &Path) {
     }
 }
 
-/// 生成 config (mixed 模式, sing-box hysteria2 outbound 格式, 安全)
-///
-/// DNS: 国外域名经 hysteria2 走 1.1.1.1 TCP, 用 socks5h 远程解析。
-fn generate_conf(peer: &Peer) -> Result<()> {
-    let sb_dir = gnp_core::platform::sb_dir();
-    let rules_dir = gnp_core::platform::sb_rules_dir();
-    std::fs::create_dir_all(&sb_dir)?;
-    std::fs::create_dir_all(&rules_dir)?;
-
-    let password = peer.password.clone();
-
-    let config = serde_json::json!({
-        "log": { "level": "info", "timestamp": true },
-        "dns": {
-            "servers": [
-                { "tag": "dns-direct", "address": "223.5.5.5", "detour": "direct" },
-                { "tag": "dns-proxy", "address": "1.1.1.1", "detour": "hy2-out", "type": "tcp" }
-            ],
-            "rules": [
-                { "rule_set": ["geosite-cn", "geoip-cn"], "server": "dns-direct" }
-            ],
-            "final": "dns-proxy",
-            "strategy": "prefer_ipv4"
+/// peer → ClientSettings (唯一事实源形态)
+fn peer_settings(peer: &Peer) -> Result<gnp_core::settings::ClientSettings> {
+    let (host, port) = match peer
+        .server_endpoint
+        .as_deref()
+        .and_then(|e| e.rsplit_once(':'))
+        .and_then(|(h, p)| Some((h.to_string(), p.parse::<u16>().ok()?)))
+    {
+        Some((h, p)) => (h, p),
+        None => (SERVER_HOST.to_string(), SERVER_PORT),
+    };
+    let s = gnp_core::settings::ClientSettings {
+        server: gnp_core::settings::ClientServer {
+            host,
+            hy2_port: port,
+            ..Default::default()
         },
-        "inbounds": [{
-            "type": "mixed",
-            "tag": "mixed-in",
-            "listen": "0.0.0.0",
-            "listen_port": 1080
-        }],
-        "outbounds": [
-            {
-                "type": "hysteria2",
-                "tag": "hy2-out",
-                "server": SERVER_HOST,
-                "server_port": SERVER_PORT,
-                "password": password,
-                "tls": { "enabled": true, "insecure": true }
-            },
-            { "type": "direct", "tag": "direct" }
-        ],
-        "route": {
-            "rule_set": [
-                { "type": "local", "tag": "geosite-cn", "format": "binary", "path": rules_dir.join("geosite-cn.srs").to_str().unwrap() },
-                { "type": "local", "tag": "geoip-cn", "format": "binary", "path": rules_dir.join("geoip-cn.srs").to_str().unwrap() }
-            ],
-            "rules": [
-                { "rule_set": ["geosite-cn", "geoip-cn"], "outbound": "direct" },
-                { "ip_is_private": true, "outbound": "direct" }
-            ],
-            "final": "hy2-out"
-        }
-    });
+        auth: gnp_core::settings::ClientAuth {
+            hy2_password: peer.password.clone(),
+            obfs_password: peer
+                .obfs
+                .clone()
+                .unwrap_or_else(|| OBFS_PASSWORD.to_string()),
+        },
+        client: gnp_core::settings::ClientLocal {
+            // 新注册机器 = 局域网服务机, 与 aipro/lwmate/cozepc 一致
+            listen: "0.0.0.0".to_string(),
+            ..Default::default()
+        },
+        guard: Default::default(),
+    };
+    s.validate()?;
+    Ok(s)
+}
 
-    let content = serde_json::to_string_pretty(&config)?;
-    let conf_path = gnp_core::platform::sb_config();
-    std::fs::write(&conf_path, content)?;
-    println!("✓ 配置已生成: {} (mixed 模式, 不碰路由表)", conf_path.display());
+/// 写 config.toml (唯一事实源) + config.json (生成物, 走共享 builder)
+///
+/// 与 install/migrate 同一条路径: 双通道 + obfs + clash_api, 行为一致 (D3/D5)。
+fn generate_conf(peer: &Peer) -> Result<()> {
+    let settings = peer_settings(peer)?;
+    let home = gnp_core::platform::gnp_home();
+    gnp_core::platform::ensure_layout(&home)?;
+
+    let toml_path = settings.save_default()?;
+    println!("✓ 唯一事实源: {}", toml_path.display());
+
+    let json_path = gnp_core::install::generate_config(&settings)?;
+    println!("✓ 生成物: {} (双通道 mixed 模式, 不碰路由表)", json_path.display());
     Ok(())
 }
 
@@ -303,38 +302,31 @@ pub fn run(args: &RegisterArgs) -> Result<()> {
     let peer_file = repo.join("peers").join(format!("{}.json", peer.client_id));
     mark_peer_used(&repo, &peer_file, &client_id)?;
 
-    // 生成 config
-    generate_conf(&peer)?;
-
-    // 安装 sing-box (若未装)
+    // 生成 config.toml + config.json (顺序: 资产先就位, 配置最后)
     if !gnp_core::platform::sb_exists() {
         gnp_core::install::install_singbox(None)?;
     } else {
-        println!("✅ sing-box 已存在: {}", gnp_core::platform::sb_bin().display());
+        println!("✅ sing-box 已存在: {}", gnp_core::platform::gnp_sb_bin().display());
     }
 
     // 下载规则集
     gnp_core::install::install_rules()?;
+
+    // 最后落配置 (前面失败就不留半边配置)
+    generate_conf(&peer)?;
+    gnp_core::install::check_config_file(&gnp_core::platform::gnp_config_json())?;
 
     // Linux: 安装 systemd 用户服务 (开机自启, 无需 root)
     if gnp_core::platform::Platform::detect() == gnp_core::platform::Platform::Linux {
         gnp_core::service::install_linux()?;
     }
 
-    // 验证配置
-    println!("\n验证 sing-box 配置...");
-    let st = Command::new(gnp_core::platform::sb_bin())
-        .args(["check", "-c", gnp_core::platform::sb_config().to_str().unwrap()])
-        .status();
-    match st {
-        Ok(s) if s.success() => println!("✓ 配置验证通过"),
-        _ => println!("⚠️  配置验证失败! 请检查 {}", gnp_core::platform::sb_config().display()),
-    }
+    println!("✓ 配置验证通过 (sing-box check)");
 
     println!("\n⚠️  最后一步: 在 lwtop 上执行激活!");
-    println!("  gnp-server activate {}", client_id);
-    println!("\n激活后启动代理:");
-    println!("  gnp-client start");
+    println!("  sudo /opt/gnp/bin/gnps activate {}", client_id);
+    println!("\n激活后启动代理 + 装调度:");
+    println!("  gnpc install-scheduler && gnpc start");
     println!("使用代理:");
     println!("  export https_proxy=http://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080");
     println!("\n注册完成! client_id={}  server={}:{}", client_id, SERVER_HOST, SERVER_PORT);

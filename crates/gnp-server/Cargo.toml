@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "global-net-proxy server CLI — WireGuard server (内核 wg) 管理"
+description = "gnps — global-net-proxy server CLI (sing-box hysteria2 inbound)"
 
 [[bin]]
-name = "gnp-server"
+name = "gnps"
 path = "src/main.rs"
 
 [dependencies]

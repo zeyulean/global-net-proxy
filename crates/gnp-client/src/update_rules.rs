@@ -1,106 +1,40 @@
-//! gnp-client update-rules — 规则集更新 + sing-box 守护
+//! gnp rules-update — 规则集日更 (下载 + 重启加载)
 //!
-//! 三种模式:
-//!   update   — 重启 sing-box 加载最新 remote rule-set
-//!   check    — 检查 sing-box 是否运行, 挂了就重启
-//!   cron     — 安装/管理 cron 任务 (每天检查)
+//! 唯一调用方是 tick.sh 的 04 点窗口 (`gnpc rules-update`), 成功才写当日标记;
+//! 失败 → tick.sh 落 WARN, 明日再试。手动跑同一条命令。
+//!
+//! 旧 `update-rules --install-cron` / `--check` 已删: 调度唯一 (D3),
+//! 挂掉拉起归 `gnpc guard`。
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::process::Command;
 
-/// update: 强制更新规则集 (重启 sing-box 即可)
-pub fn cmd_update() -> Result<()> {
-    let conf = gnp_core::platform::sb_config();
-    if !conf.exists() {
-        println!("⚠️  未安装 sing-box, 跳过");
-        return Ok(());
-    }
-    println!("触发规则集更新...");
+use gnp_core::install;
+use gnp_core::platform;
 
-    // 重启 sing-box (remote rule-set 在启动时拉取)
+/// 重新下载规则集 + 重启 sing-box (remote/local rule-set 在启动时加载)
+pub fn cmd_update() -> Result<()> {
+    let conf = platform::gnp_config_json();
+    if !conf.exists() {
+        anyhow::bail!(
+            "配置不存在: {} (先 `gnpc install`)",
+            conf.display()
+        );
+    }
+    println!("更新规则集...");
+
+    // 1) 重新下载 (download_rule_tmp 成功才替换, 失败保留现有有效规则)
+    install::install_rules()?;
+
+    // 2) 重启加载 (先杀再由服务管理器拉起, 保证新实例)
     if sb_process_running() {
         kill_sb_process();
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
+    let plat = platform::ensure_supported()?;
+    let _ = gnp_core::service::start(plat);
 
-    // 用服务管理器重启
-    let platform = gnp_core::platform::ensure_supported()?;
-    if gnp_core::platform::config_exists() {
-        let _ = gnp_core::service::start(platform);
-    }
-
-    println!("规则集更新完成 (sing-box 已重启加载最新 geosite/geoip)");
-    Ok(())
-}
-
-/// check: 检查 sing-box 是否运行, 挂了就拉起来
-pub fn cmd_check() -> Result<()> {
-    let running = sb_process_running();
-
-    if running {
-        println!("sing-box 运行中 ✓");
-        return Ok(());
-    }
-
-    println!("⚠️  sing-box 未运行, 尝试重启...");
-    let platform = gnp_core::platform::ensure_supported()?;
-    match gnp_core::service::start(platform) {
-        Ok(()) => println!("✅ sing-box 已重启"),
-        Err(e) => println!("⚠️  重启失败: {}", e),
-    }
-    Ok(())
-}
-
-/// 安装 cron 任务 (每天凌晨 4 点检查)
-pub fn cmd_install_cron() -> Result<()> {
-    // 获取 gnp-client 自身路径
-    let self_path = std::env::current_exe()
-        .context("无法获取 gnp-client 路径")?;
-    let self_str = self_path.to_str()
-        .context("路径含非 UTF-8")?;
-
-    let log_path = gnp_core::platform::sb_dir().join("cron.log");
-    let cron_line = format!(
-        "0 4 * * * {} update-rules check >> {} 2>&1",
-        self_str,
-        log_path.display()
-    );
-
-    // 读取现有 crontab, 过滤旧条目
-    let existing = Command::new("crontab")
-        .args(["-l"])
-        .output();
-    let mut lines: Vec<String> = Vec::new();
-    if let Ok(out) = existing {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if !line.contains("gnp-client") && !line.contains("global-net-proxy") {
-                    lines.push(line.to_string());
-                }
-            }
-        }
-    }
-    lines.push(cron_line.clone());
-
-    // 写入新 crontab
-    let content = lines.join("\n");
-    let mut st = Command::new("crontab")
-        .args(["-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("crontab 命令失败")?;
-    // 显式关闭 stdin — 不 drop 则 crontab 等不到 EOF, 安装会永久挂起
-    if let Some(mut stdin) = st.stdin.take() {
-        let _ = stdin.write_all(content.as_bytes());
-    }
-    let output = st.wait_with_output().context("crontab 写入失败")?;
-    if !output.status.success() {
-        anyhow::bail!("crontab 安装失败: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    println!("cron 已安装: {}", cron_line);
-    println!("每天 04:00 检查 sing-box 常驻 + 规则集更新");
+    println!("✅ 规则集已更新 (sing-box 已重启加载)");
     Ok(())
 }
 
@@ -111,9 +45,13 @@ fn sb_process_running() -> bool {
             .args(["/FI", "IMAGENAME eq sing-box.exe", "/NH"])
             .output()
             .map(|o| {
-                format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
-                    .to_lowercase()
-                    .contains("sing-box.exe")
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+                .to_lowercase()
+                .contains("sing-box.exe")
             })
             .unwrap_or(false)
     } else {
@@ -128,8 +66,20 @@ fn sb_process_running() -> bool {
 /// 杀掉 sing-box 进程 (跨平台)
 fn kill_sb_process() {
     if cfg!(windows) {
-        let _ = Command::new("taskkill").args(["/F", "/IM", "sing-box.exe"]).status();
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM", "sing-box.exe"])
+            .status();
     } else {
         let _ = Command::new("pkill").args(["-f", "sing-box run"]).status();
     }
+}
+
+/// 保留: 供 `gnpc start` 前自检用 (macOS 无 launchd 时的兜底)
+#[allow(dead_code)]
+pub fn ensure_running() -> Result<()> {
+    if sb_process_running() {
+        return Ok(());
+    }
+    let plat = platform::ensure_supported().context("平台不支持")?;
+    gnp_core::service::start(plat)
 }

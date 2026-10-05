@@ -1,14 +1,217 @@
 //! 平台检测与路径管理
 //!
-//! gnp 跨平台支持:
-//! - macOS:   用 launchctl 管理 (~/Library/LaunchAgents/com.gnp.sing-box.plist)
-//! - Linux:   用 systemd 管理 (gnp-proxy.service)
-//! - Windows: 用 schtasks 计划任务管理 (gnp-singbox, 开机自启 SYSTEM)
+//! gnp 跨平台支持 (v2 命名):
+//! - macOS:   launchd `com.gnpc.singbox` (常驻) + `com.gnpc.tick` (调度)
+//! - Linux:   systemd `gnpc.service` (客户端) / `gnps.service` (服务端) + crontab 单行 tick
+//! - Windows: schtasks 计划任务 `gnpc` (开机自启)
 //!
-//! sing-box 数据目录统一为 ~/.local/share/sing-box/
+//! 部署根目录 (v2 路径收敛, 2026-10-05 plan D4):
+//! - 客户端 `~/.local/gnp/`  = `$GNP_HOME` || `~/.local/gnp`
+//! - 服务端 `/opt/gnp/`      = `$GNP_SERVER_HOME` || `/opt/gnp`
+//!
+//! 布局:
+//! ```text
+//! <gnp_home>/
+//!   bin/{gnpc,sing-box,tick.sh}   config.toml(唯一事实源)   config.json(生成物)
+//!   etc/tick.d/*.sh   rules/*.srs   secrets/   var/   backups/
+//! ```
 
-use anyhow::{bail, Result};
-use std::path::PathBuf;
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+
+/// hy2 默认端口 (plan D4: 代码默认值 5766, toml `[server].hy2_port` 可覆盖)
+pub const GNP_PORT: u16 = 5766;
+
+/// clash_api 默认端口 (switch/status/guard 依赖)
+pub const GNP_CLASH_API_PORT: u16 = 9090;
+
+/// 客户端部署根目录: `$GNP_HOME` || `~/.local/gnp`
+pub fn gnp_home() -> PathBuf {
+    if let Some(h) = std::env::var_os("GNP_HOME") {
+        let p = PathBuf::from(h);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    home_dir().join(".local/gnp")
+}
+
+/// 服务端部署根目录: `$GNP_SERVER_HOME` || `/opt/gnp`
+pub fn gnps_home() -> PathBuf {
+    if let Some(h) = std::env::var_os("GNP_SERVER_HOME") {
+        let p = PathBuf::from(h);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    PathBuf::from("/opt/gnp")
+}
+
+/// 用户主目录
+pub fn home_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 展开 `~` 前缀 (config.toml 里 ssh_key 允许写 `~/.ssh/id_ed25519`)
+pub fn expand_tilde(s: &str) -> PathBuf {
+    if s == "~" {
+        return home_dir();
+    }
+    if let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")) {
+        return home_dir().join(rest);
+    }
+    PathBuf::from(s)
+}
+
+/// 创建 `<root>` 下的 gnp 目录骨架 (幂等)
+pub fn ensure_layout(root: &Path) -> Result<()> {
+    for sub in [
+        "bin",
+        "etc/tick.d",
+        "rules",
+        "var",
+        "secrets",
+        "backups",
+    ] {
+        std::fs::create_dir_all(root.join(sub))?;
+    }
+    Ok(())
+}
+
+// --- 客户端派生路径 ---
+
+pub fn gnp_bin_dir() -> PathBuf {
+    gnp_home().join("bin")
+}
+/// sing-box 二进制 (与 gnpc/tick.sh 同目录)
+pub fn gnp_sb_bin() -> PathBuf {
+    gnp_bin_dir().join(if cfg!(windows) { "sing-box.exe" } else { "sing-box" })
+}
+pub fn gnp_client_bin() -> PathBuf {
+    gnp_bin_dir().join(if cfg!(windows) { "gnpc.exe" } else { "gnpc" })
+}
+pub fn gnp_server_bin() -> PathBuf {
+    gnp_bin_dir().join(if cfg!(windows) { "gnps.exe" } else { "gnps" })
+}
+pub fn gnp_tick_sh() -> PathBuf {
+    gnp_bin_dir().join("tick.sh")
+}
+/// 唯一事实源 (0600)
+pub fn gnp_config_toml() -> PathBuf {
+    gnp_home().join("config.toml")
+}
+/// 生成物 (勿手改)
+pub fn gnp_config_json() -> PathBuf {
+    gnp_home().join("config.json")
+}
+pub fn gnp_var_dir() -> PathBuf {
+    gnp_home().join("var")
+}
+pub fn gnp_cache_db() -> PathBuf {
+    gnp_var_dir().join("cache.db")
+}
+pub fn gnp_rules_dir() -> PathBuf {
+    gnp_home().join("rules")
+}
+pub fn gnp_secrets_dir() -> PathBuf {
+    gnp_home().join("secrets")
+}
+pub fn gnp_backups_dir() -> PathBuf {
+    gnp_home().join("backups")
+}
+pub fn gnp_tick_d() -> PathBuf {
+    gnp_home().join("etc/tick.d")
+}
+pub fn gnp_tick_log() -> PathBuf {
+    gnp_var_dir().join("tick.log")
+}
+pub fn gnp_guard_state() -> PathBuf {
+    gnp_var_dir().join("guard-state.json")
+}
+pub fn gnp_guard_log() -> PathBuf {
+    gnp_var_dir().join("guard.log")
+}
+pub fn gnp_singbox_log() -> PathBuf {
+    gnp_var_dir().join("sing-box.log")
+}
+pub fn gnp_singbox_err() -> PathBuf {
+    gnp_var_dir().join("sing-box.err")
+}
+/// hy2 密码 secret (aipro 路由容器挂载源; 必须带换行 — 坑清单 #3)
+pub fn gnp_secret_hy2_password() -> PathBuf {
+    gnp_secrets_dir().join("hy2-password")
+}
+pub fn gnp_secret_hy2_obfs() -> PathBuf {
+    gnp_secrets_dir().join("hy2-obfs")
+}
+
+// --- 服务端派生路径 ---
+
+pub fn gnps_bin_dir() -> PathBuf {
+    gnps_home().join("bin")
+}
+pub fn gnps_sb_bin() -> PathBuf {
+    gnps_bin_dir().join("sing-box")
+}
+pub fn gnps_tick_sh() -> PathBuf {
+    gnps_bin_dir().join("tick.sh")
+}
+pub fn gnps_config_toml() -> PathBuf {
+    gnps_home().join("config.toml")
+}
+pub fn gnps_config_json() -> PathBuf {
+    gnps_home().join("config.json")
+}
+pub fn gnps_certs_dir() -> PathBuf {
+    gnps_home().join("certs")
+}
+pub fn gnps_cert_crt() -> PathBuf {
+    gnps_certs_dir().join("server.crt")
+}
+pub fn gnps_cert_key() -> PathBuf {
+    gnps_certs_dir().join("server.key")
+}
+pub fn gnps_var_dir() -> PathBuf {
+    gnps_home().join("var")
+}
+pub fn gnps_backups_dir() -> PathBuf {
+    gnps_home().join("backups")
+}
+pub fn gnps_pending_dir() -> PathBuf {
+    gnps_home().join("pending-users")
+}
+pub fn gnps_tick_d() -> PathBuf {
+    gnps_home().join("etc/tick.d")
+}
+
+// --- 旧布局 (migrate 探测用) ---
+
+/// v1 客户端数据目录 `~/.local/share/sing-box/` (migrate 的迁移源)
+pub fn legacy_sb_dir() -> PathBuf {
+    home_dir().join(".local/share/sing-box")
+}
+
+/// v1 服务端目录 `/opt/gnp-quic/` (lwtop)
+pub fn legacy_server_dir() -> PathBuf {
+    PathBuf::from("/opt/gnp-quic")
+}
+
+// --- 存在性断言 ---
+
+/// sing-box 二进制是否存在
+pub fn sb_exists() -> bool {
+    gnp_sb_bin().exists()
+}
+
+/// config.json 是否存在
+pub fn config_exists() -> bool {
+    gnp_config_json().exists()
+}
+
+/// config.toml 是否存在 (唯一事实源)
+pub fn settings_exist() -> bool {
+    gnp_config_toml().exists()
+}
 
 /// 平台枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,40 +242,6 @@ impl Platform {
     }
 }
 
-/// sing-box 数据目录
-///
-/// 统一使用 ~/.local/share/sing-box/ (跨平台一致, 不与 macOS 的 Application Support 混淆;
-/// Windows 上为 C:\Users\<u>\.local\share\sing-box\, 三端路径一致便于文档统一)
-pub fn sb_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".local/share/sing-box")
-}
-
-/// sing-box 二进制路径
-pub fn sb_bin() -> PathBuf {
-    sb_dir().join(if cfg!(windows) { "sing-box.exe" } else { "sing-box" })
-}
-
-/// sing-box 配置文件路径
-pub fn sb_config() -> PathBuf {
-    sb_dir().join("config.json")
-}
-
-/// 规则集目录
-pub fn sb_rules_dir() -> PathBuf {
-    sb_dir().join("rules")
-}
-
-/// 检查 sing-box 二进制是否存在
-pub fn sb_exists() -> bool {
-    sb_bin().exists()
-}
-
-/// 检查 config.json 是否存在
-pub fn config_exists() -> bool {
-    sb_config().exists()
-}
-
 /// 检查平台是否受支持
 pub fn ensure_supported() -> Result<Platform> {
     let p = Platform::detect();
@@ -82,19 +251,57 @@ pub fn ensure_supported() -> Result<Platform> {
     }
 }
 
-/// 断言 sing-box 已安装
+/// 断言 sing-box 已安装 (二进制 + 生成物 config.json)
 pub fn ensure_installed() -> Result<()> {
     if !sb_exists() {
-        bail!("sing-box 未安装! 二进制不存在: {}", sb_bin().display());
+        bail!("sing-box 未安装! 二进制不存在: {}", gnp_sb_bin().display());
     }
     if !config_exists() {
         bail!(
-            "配置文件不存在: {}. 请先运行 `gnp config` 生成配置。",
-            sb_config().display()
+            "配置不存在: {}。请先运行 `gnpc install` 生成。",
+            gnp_config_json().display()
         );
     }
     Ok(())
 }
+
+/// 把路径写进 secret 文件 (0600, **带换行** — 坑清单 #3: read 无换行返回非零)
+pub fn write_secret(path: &Path, value: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建 secrets 目录失败: {}", parent.display()))?;
+    }
+    let body = if value.ends_with('\n') {
+        value.to_string()
+    } else {
+        format!("{}\n", value)
+    };
+    std::fs::write(path, body)
+        .with_context(|| format!("写 secret 失败: {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("设置 0600 失败: {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// config.toml 权限 0600 (含内联密码, D2)
+pub fn write_private(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(path, content)
+        .with_context(|| format!("写 {} 失败", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+    Ok(())
+}
+
 /// PowerShell -EncodedCommand 编码 (UTF-16LE + base64)
 ///
 /// 免引号转义地狱: 任意脚本编码后经 `powershell -NoProfile -EncodedCommand <b64>` 执行
@@ -114,4 +321,17 @@ pub fn ps_encode(script: &str) -> String {
         out.push(if chunk.len() > 2 { TBL[n as usize & 63] as char } else { '=' });
     }
     out
+}
+
+/// 本地端口是否有东西在听 (跨平台, 直接 TCP 探测, 不依赖 lsof/netstat)
+pub fn port_open(port: u16) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    match format!("127.0.0.1:{}", port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut it| it.next())
+    {
+        Some(a) => TcpStream::connect_timeout(&a, std::time::Duration::from_millis(600)).is_ok(),
+        None => false,
+    }
 }

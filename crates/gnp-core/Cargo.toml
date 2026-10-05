@@ -9,6 +9,7 @@ description = "global-net-proxy 共享核心库 — 平台抽象 / config 解析
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }

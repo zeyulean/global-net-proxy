@@ -1,0 +1,25 @@
+# aipro.toml — aipro (192.168.1.2, 树莓派/路由机, 局域网服务机)
+# ⚠️ home 软链 /mnt/disk/lwboy → /home/lwboy, 配置内嵌绝对路径一律写 /home/lwboy
+# ⚠️ 宿主 sing-box 迁到系统级 gnpc.service 后, 容器 aipro-wifi-router 仍独立跑一个 sing-box
+#    (两个角色本来并存, 别当残留杀掉)
+# 部署: scp aipro.toml aipro:/home/lwboy/.local/gnp/config.toml && gnpc install
+
+[server]
+host = "8.209.203.17"
+hy2_port = 5766
+ssh_port = 22
+ssh_user = "lw"
+ssh_key  = "~/.ssh/id_ed25519"
+
+[auth]
+hy2_password  = "gnp-quic-test-password"
+obfs_password = "gnp-obfs-20261005"
+
+[client]
+listen = "0.0.0.0"          # 局域网服务机; mac 才是 127.0.0.1
+clash_api_port = 9090
+
+[guard]
+freeze_after_failures = 2
+backoff_base_s = 60
+backoff_cap_s  = 180

@@ -1,4 +1,4 @@
-//! gnp-client cleanup — 应急清理
+//! gnpc cleanup — 应急清理
 //!
 //! 参考事故: aipro 2026-08-10 sing-box tun 破坏路由导致完全断网。
 //! 本命令彻底清理 sing-box 所有残留, 防止再次破坏网络。
@@ -16,7 +16,10 @@ use std::process::Command;
 
 pub fn run() -> Result<()> {
     println!("=== [1/6] 立即停止 sing-box 服务 ===");
-    let _ = Command::new("systemctl").args(["stop", "gnp-proxy"]).status();
+    // 新名 + 旧名都要停 (旧名 gnp-proxy 可能在迁移前就装着)
+    for unit in ["gnpc", "gnp-proxy", "gnp-hy2"] {
+        let _ = Command::new("systemctl").args(["stop", unit]).status();
+    }
     let _ = Command::new("systemctl").args(["stop", "sing-box-gnp"]).status();
     let _ = Command::new("systemctl").args(["stop", "sing-box"]).status();
     let _ = Command::new("launchctl").args(["unload"]).arg(
@@ -38,7 +41,9 @@ pub fn run() -> Result<()> {
     }
 
     println!("=== [2/6] 禁用开机自启 ===");
-    let _ = Command::new("systemctl").args(["disable", "gnp-proxy"]).status();
+    for unit in ["gnpc", "gnp-proxy", "gnp-hy2"] {
+        let _ = Command::new("systemctl").args(["disable", unit]).status();
+    }
     let _ = Command::new("systemctl").args(["disable", "sing-box-gnp"]).status();
     let _ = Command::new("systemctl").args(["mask", "sing-box-gnp"]).status();
     println!("  开机自启已禁用 ✓");
@@ -77,20 +82,25 @@ pub fn run() -> Result<()> {
     println!("  ✓");
 
     println!("=== [6/6] 备份并禁用 sing-box 数据目录 ===");
-    let sb_dir = gnp_core::platform::sb_dir();
-    if sb_dir.exists() {
+    // 新布局 ~/.local/gnp 与旧布局 ~/.local/share/sing-box 都要处理
+    for (label, home) in [
+        ("新", gnp_core::platform::gnp_home()),
+        ("旧", gnp_core::platform::legacy_sb_dir()),
+    ] {
+        if !home.exists() {
+            println!("  [{}] {} 不存在, 跳过", label, home.display());
+            continue;
+        }
         let ts = chrono_free_timestamp();
-        let backup = sb_dir.with_file_name(format!("sing-box.disabled-{}", ts));
-        match std::fs::rename(&sb_dir, &backup) {
-            Ok(()) => println!("  已备份: {}", backup.display()),
+        let backup = home.with_file_name(format!("{}.disabled-{}", home.file_name().unwrap_or_default().to_string_lossy(), ts));
+        match std::fs::rename(&home, &backup) {
+            Ok(()) => println!("  [{}] 已备份: {}", label, backup.display()),
             Err(_) => {
-                println!("  重命名失败, 尝试 rm -rf...");
-                let _ = std::fs::remove_dir_all(&sb_dir);
-                println!("  sing-box 数据已删除");
+                println!("  [{}] 重命名失败, 尝试 rm -rf...", label);
+                let _ = std::fs::remove_dir_all(&home);
+                println!("  [{}] sing-box 数据已删除", label);
             }
         }
-    } else {
-        println!("  sing-box 数据目录不存在, 跳过");
     }
 
     println!("\n=== 最终状态 ===");

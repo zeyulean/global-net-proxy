@@ -1,4 +1,4 @@
-//! gnp-client probe — 主动诊断: hy2 握手测试 + UDP 载荷尺寸扫描
+//! gnpc probe — 主动诊断: hy2 握手测试 + UDP 载荷尺寸扫描
 //!
 //! 把 2026-10-05 MTU 黑洞事件两天的排查范式 (plan.md 附录) 一条命令化:
 //! 1. hy2 握手测试 — 起临时 sing-box 实例 (独立端口/无 cache_file), 经真实路径 curl generate_204
@@ -26,9 +26,9 @@ pub struct ProbeArgs {
 
 /// 入口
 pub fn run(args: ProbeArgs) -> Result<()> {
-    let cfg_path = gnp_core::platform::sb_config();
+    let cfg_path = gnp_core::platform::gnp_config_json();
     if !cfg_path.exists() {
-        bail!("配置不存在: {} (先 gnp-client install)", cfg_path.display());
+        bail!("配置不存在: {} (先 gnpc install)", cfg_path.display());
     }
     let v = gnp_core::config::load(&cfg_path)?;
     let hy2 = gnp_core::config::extract_hy2_endpoint(&v)
@@ -57,7 +57,7 @@ pub fn run(args: ProbeArgs) -> Result<()> {
             Some(true) => println!("     注: 扫描显示 MTU 可容 QUIC — 排除 MTU, 查 QoS/服务端/特征识别"),
             None => {}
         }
-        println!("     人工强制: gnp-client switch ssh; 恢复自动: gnp-client switch auto");
+        println!("     人工强制: gnpc switch ssh; 恢复自动: gnpc switch auto");
     }
     Ok(())
 }
@@ -109,7 +109,7 @@ fn handshake_test(hy2: &gnp_core::config::Hy2Endpoint) -> bool {
 
     // 起临时实例 (隐藏窗口: Windows)
     let mut child = {
-        let mut cmd = Command::new(gnp_core::platform::sb_bin());
+        let mut cmd = Command::new(gnp_core::platform::gnp_sb_bin());
         cmd.args(["run", "-c"])
             .arg(&cfg_file)
             .stdout(std::process::Stdio::null())
@@ -221,7 +221,7 @@ fn mtu_scan(server: &str, server_port: u16, args: &ProbeArgs) -> Option<u16> {
         Some(mp) if mp >= 1228 => println!("    ✅ 路径可容 QUIC (≥{}B 到达, ≥1200B 初始包无碍)", mp),
         Some(mp) => {
             println!("    ❌ MTU 截止 ~{}B: QUIC 初始包 (≥1200B) 被丢 → hy2 不可用", mp);
-            println!("       建议: urltest 已自动落 ssh; 人工强制 gnp-client switch ssh");
+            println!("       建议: urltest 已自动落 ssh; 人工强制 gnpc switch ssh");
         }
         None => {
             println!("    ❌ 全档被丢 — UDP 大包全面黑洞 (或端口/服务端异常), 建议 ssh 兜底");

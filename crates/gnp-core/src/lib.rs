@@ -1,8 +1,9 @@
 //! gnp-core — global-net-proxy 共享核心库
 //!
 //! 提供 client 和 server 共用的基础设施:
-//! - platform: 平台检测与路径管理
-//! - service:  跨平台服务管理 (launchctl/systemd)
+//! - platform: 平台检测与路径管理 (客户端 `~/.local/gnp` / 服务端 `/opt/gnp`)
+//! - settings: config.toml 唯一事实源 (客户端 + 服务端)
+//! - service:  跨平台服务管理 (launchd/systemd/schtasks)
 //! - config:   sing-box config.json 解析与生成
 //! - tunnel:   Hysteria2 (QUIC) 隧道诊断 (旧名 wg, 保留兼容别名)
 
@@ -11,6 +12,7 @@ pub mod install;
 pub mod platform;
 pub mod proxy;
 pub mod service;
+pub mod settings;
 pub mod tunnel;
 
 /// 兼容别名: wg 时代 (WireGuard) 的模块名, 现已全面切换 Hysteria2/QUIC

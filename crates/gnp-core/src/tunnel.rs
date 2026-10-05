@@ -2,7 +2,9 @@
 //!
 //! 诊断信息来自:
 //! - client 端: 通过代理访问出口 IP 检测 (curl 到 ipinfo.io)
-//! - server 端: 检查 sing-box hysteria2 服务 (systemd gnp-hy2) + UDP 443 端口监听
+//! - server 端: 检查 sing-box hysteria2 服务 (systemd `gnps`) + UDP hy2 端口监听
+//!
+//! v2: 服务名 `gnps` (旧名 gnp-hy2), 端口 `GNP_PORT`=5766 (旧 443)。
 //!
 //! client 端 sing-box 是 userspace hysteria2 outbound, 没有内核接口,
 //! 所以只能通过 HTTP 检测出口 IP。
@@ -56,49 +58,45 @@ pub fn test_proxy(proxy: &str, url: &str, timeout_s: u64) -> Result<(String, u64
     Ok((code, elapsed))
 }
 
-/// 检查 server 端 sing-box hysteria2 服务是否激活 (server 端)
+/// 检查 server 端 sing-box hysteria2 服务是否激活
 ///
-/// 通过 systemd 服务 gnp-hy2 状态或 sing-box 进程判断。
+/// systemd `gnps` 状态, 或 (迁移窗口内) 旧名 `gnp-hy2`。
+///
+/// **只认 systemd**: pgrep 兜底会误判 —— 客户端 sing-box 也在跑, 会让
+/// "服务端活着" 显示成 ✅ (Mac 上尤其明显)。服务端判定必须看服务状态。
 pub fn hy2_server_active() -> bool {
-    // 方式 1: systemd 服务 gnp-hy2
-    if let Ok(out) = Command::new("systemctl")
-        .args(["is-active", "gnp-hy2"])
-        .output()
-    {
-        let status = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if status == "active" {
-            return true;
-        }
-    }
-    // 方式 2: sing-box 进程存在
-    if let Ok(out) = Command::new("pgrep").arg("-f").arg("sing-box run").output() {
-        if out.status.success() {
-            return true;
+    for name in ["gnps", "gnp-hy2"] {
+        if let Ok(out) = Command::new("systemctl").args(["is-active", name]).output() {
+            if String::from_utf8_lossy(&out.stdout).trim() == "active" {
+                return true;
+            }
         }
     }
     false
 }
 
-/// 运行 `systemctl status gnp-hy2` 获取原始输出 (server 端)
+/// 运行 `systemctl status <name>` 获取原始输出 (server 端)
 pub fn hy2_status_raw() -> Result<String> {
+    let name = "gnps";
     let out = Command::new("systemctl")
-        .args(["status", "gnp-hy2", "--no-pager", "-l"])
+        .args(["status", name, "--no-pager", "-l"])
         .output()
-        .context("systemctl status gnp-hy2 失败 (需要 root)")?;
+        .context(format!("systemctl status {} 失败 (需要 root)", name))?;
     if !out.status.success() {
         anyhow::bail!(
-            "systemctl status gnp-hy2 失败: {}",
+            "systemctl status {} 失败: {}",
+            name,
             String::from_utf8_lossy(&out.stderr)
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// 检查 server 端 UDP 443 端口是否监听 (hysteria2/QUIC)
-pub fn port_443_listening() -> bool {
+/// 检查 server 端 UDP hy2 端口是否监听 (默认 GNP_PORT=5766)
+pub fn hy2_port_listening(port: u16) -> bool {
     let out = Command::new("sh")
         .arg("-c")
-        .arg("ss -ulnp | grep -q ':443 '")
+        .arg(format!("ss -ulnp | grep -q ':{} '", port))
         .output();
     match out {
         Ok(o) => o.status.success(),

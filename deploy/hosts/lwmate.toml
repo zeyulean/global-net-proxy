@@ -1,0 +1,23 @@
+# lwmate.toml — lwmate (192.168.0.110, 局域网服务机, sudo NOPASSWD)
+# 部署: scp lwmate.toml lwmate:~/.local/gnp/config.toml && gnpc install
+# 旧 systemd 服务名 gnp-proxy → 迁 gnpc.service (旧名 install-scheduler 会 disable)
+
+[server]
+host = "8.209.203.17"
+hy2_port = 5766
+ssh_port = 22
+ssh_user = "lw"
+ssh_key  = "~/.ssh/id_ed25519"
+
+[auth]
+hy2_password  = "gnp-f9edae36cc9e8b0f3f470d3d07db55b0"
+obfs_password = "gnp-obfs-20261005"
+
+[client]
+listen = "0.0.0.0"          # 局域网服务机; mac 才是 127.0.0.1
+clash_api_port = 9090
+
+[guard]
+freeze_after_failures = 2
+backoff_base_s = 60
+backoff_cap_s  = 180

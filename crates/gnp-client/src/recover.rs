@@ -1,4 +1,4 @@
-//! gnp-client recover — 断网恢复
+//! gnpc recover — 断网恢复
 //!
 //! aipro 事故 (2026-08-10) 后遗留的断网恢复工具。
 //! sing-box tun 模式接管系统路由表导致断网, 本命令恢复网络。
@@ -16,7 +16,10 @@ use std::process::Command;
 
 pub fn run() -> Result<()> {
     println!("[1/5] 停止 sing-box 服务 (破坏路由的元凶)");
-    let _ = Command::new("systemctl").args(["stop", "gnp-proxy"]).status();
+    // 新名 + 旧名都要停 (旧名 gnp-proxy 可能在迁移前就装着)
+    for unit in ["gnpc", "gnp-proxy", "gnp-hy2"] {
+        let _ = Command::new("systemctl").args(["stop", unit]).status();
+    }
     let _ = Command::new("systemctl")
         .args(["stop", "sing-box-gnp"])
         .status();

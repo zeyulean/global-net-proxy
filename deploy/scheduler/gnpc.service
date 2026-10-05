@@ -1,0 +1,15 @@
+[Unit]
+Description=GNP Client (gnpc, mixed proxy, no tun)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{SB_BIN}} run -c {{CONFIG}}
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

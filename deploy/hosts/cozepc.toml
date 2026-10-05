@@ -1,0 +1,23 @@
+# cozepc.toml — cozepc (10.99.0.4, root, 火山引擎, ProxyJump ningsure)
+# 部署: scp cozepc.toml cozepc:/root/.local/gnp/config.toml && gnpc install
+# 差异: root 用户的 ssh 私钥路径 + 独立 hy2 密码
+
+[server]
+host = "8.209.203.17"
+hy2_port = 5766
+ssh_port = 22
+ssh_user = "lw"
+ssh_key  = "/root/.ssh/id_ed25519"
+
+[auth]
+hy2_password  = "gnp-99e2e8cb6141a1a3d603c4133c6fe4e"
+obfs_password = "gnp-obfs-20261005"
+
+[client]
+listen = "0.0.0.0"          # 局域网服务机; mac 才是 127.0.0.1
+clash_api_port = 9090
+
+[guard]
+freeze_after_failures = 2
+backoff_base_s = 60
+backoff_cap_s  = 180
